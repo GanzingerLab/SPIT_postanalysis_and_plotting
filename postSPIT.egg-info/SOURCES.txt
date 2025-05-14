@@ -1,4 +1,6 @@
 setup.py
+postSPIT/__init__.py
+postSPIT/plotting.py
 postSPIT.egg-info/PKG-INFO
 postSPIT.egg-info/SOURCES.txt
 postSPIT.egg-info/dependency_links.txt
