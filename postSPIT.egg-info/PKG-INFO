@@ -1,0 +1,11 @@
+Metadata-Version: 2.2
+Name: postSPIT
+Version: 0.1
+Summary: Package used to do post-processing of SPIT results an to plot the data genereated by SPIT and by this same package
+Home-page: 
+Author: Gerard Castro-Linares
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Operating System :: OS Independent
+Dynamic: author
+Dynamic: classifier
+Dynamic: summary

@@ -1,0 +1,5 @@
+setup.py
+postSPIT.egg-info/PKG-INFO
+postSPIT.egg-info/SOURCES.txt
+postSPIT.egg-info/dependency_links.txt
+postSPIT.egg-info/top_level.txt
