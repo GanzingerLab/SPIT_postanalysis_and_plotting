@@ -51,6 +51,20 @@ def plot_tracks_by_id(movie, stats, csv, to_check, px2nm):
 #plot coloc tracks from colocsTracks files
 
 def plot_coloc_by_id(movie, stats, csv, to_check, px2nm):
+    """
+    Creates an image where one or multiple colocalized tracks are shown on top of the maximum projection of the image. 
+    Only works with the colocs_tracks pipeline for now
+    
+    Input: 
+        movie: video used to create maximum projection
+        stats: hdf file generated after colocalizing the tracks with SPIT open in a pandas dataframe.
+        csv: csv file generated after colocalzing the tracks with SPIT open in a pandas dataframe. 
+        to_check: list containing the index of the tracks to show.
+        px2nm: pixel size in nm. 
+        
+    ##TODO: Output:
+        fig: matplotlib figure object
+    """
     print('Tracks inside ROIs:')
     print(stats[stats['colocID'].isin(to_check)]['cell_id'].unique())
     print()
@@ -135,6 +149,20 @@ def intensity_coloc_old(moviech0, locsch0, track_id, moviech1=None, locsch1=None
         plt.close()
 #plot intensity profile of colocalized track from new version of SPIT
 def intensity_coloc(csv, movie0, movie1, to_check, px2nm):
+    """
+    Creates a plot of the intensity of two colocalzing tracks over time, with vertical dash lines indicating where they start and stop colocalizing.
+    Only usable with coloc_tracs pipeline. 
+    
+    Input: 
+        csv: csv file generated after colocalzing the tracks with SPIT open in a pandas dataframe. 
+        movie0: video of the reference channel (set as ch0 in SPIT)
+        movie1: video of the channel to compare (set as ch1 in SPIT)
+        to_check: colocID of the track to plot
+        px2nm: pixel size in nm. 
+        
+    ##TODO: Output:
+        fig: matplotlib figure object
+    """
     # plt.figure()
     intensity0 = []
     intensity1 = []
