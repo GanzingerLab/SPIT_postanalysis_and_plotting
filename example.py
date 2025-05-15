@@ -9,7 +9,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 from picasso.io import load_movie
 from skimage.draw import polygon
-
+#%%
 directory = r'D:\Data\Chi_data\first data\output2\Run00002'
 df_coloc_hdf = pd.read_hdf(directory+r'\Pat01_638nm_roi_locs_nm_trackpy_colocsTracks_stats.hdf')
 df_coloc_csv = pd.read_csv(directory + r'\Pat01_638nm_roi_locs_nm_trackpy_colocsTracks.csv')
@@ -22,10 +22,10 @@ stats_638 = pd.read_hdf(directory + r'\Pat01_638nm_roi_locs_nm_trackpy_stats.hdf
 movie488, info= load_movie(r'D:\Data\Chi_data\first data\output2\Run00002\Pat01_488nm.tif')
 movie638, info= load_movie(r'D:\Data\Chi_data\first data\output2\Run00002\Pat01_638nm.tif')
 #%%
-fig = pl.plot_tracks_by_id(movie488, stats_488, df_488, [2513,2376, 309 ], 108)
+fig = pl.plot_tracks_by_id(movie488, stats_488, df_488, [6080,2376], 108)
 # fig.savefig(r'D:\Data\my_plot.pdf') 
 #%%
-pl.plot_coloc_by_id(movie488, df_coloc_hdf, df_coloc_csv, [74], 108)
+pl.plot_coloc_by_id(movie488, df_coloc_hdf, df_coloc_csv, [74, 248], 108)
 #%%
 pl.intensity_coloc(df_coloc_csv, movie488, movie638, 74, 108)
 
