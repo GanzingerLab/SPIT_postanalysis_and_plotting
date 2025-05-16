@@ -23,8 +23,7 @@ def plot_tracks_by_id(movie, stats, csv, to_check, px2nm):
     Output:
         fig: matplotlib figure object
     """
-    print('Tracks inside ROIs:')
-    print(stats[stats['track.id'].isin(to_check)]['cell_id'].unique())
+    print('Tracks inside ROIs:', stats[stats['track.id'].isin(to_check)]['cell_id'].unique())
     
     fig, ax = plt.subplots()
     
@@ -61,12 +60,12 @@ def plot_coloc_by_id(movie, stats, csv, to_check, px2nm):
         csv: csv file generated after colocalzing the tracks with SPIT open in a pandas dataframe. 
         to_check: list containing the index of the tracks to show.
         px2nm: pixel size in nm. 
-        
-    ##TODO: Output:
+    
+    Output:
         fig: matplotlib figure object
     """
-    print('Tracks inside ROIs:')
-    print(stats[stats['colocID'].isin(to_check)]['cell_id'].unique())
+    fig, ax = plt.subplots()
+    print('Tracks inside ROIs:', stats[stats['colocID'].isin(to_check)]['cell_id'].unique())
     print()
     if 'contour' in stats.columns and len(stats[stats['colocID'].isin(to_check)]['cell_id'].unique()) == 1:
         cantour = stats[stats['colocID'] == to_check[0]]['contour'].values[0]
@@ -74,27 +73,29 @@ def plot_coloc_by_id(movie, stats, csv, to_check, px2nm):
         x1 = max(cantour[:, 0])
         y0 = min(cantour[:, 1])
         y1 = max(cantour[:, 1])
-        plt.figure()
-        plt.imshow(np.max(movie, axis = 0)[y0:y1, x0:x1], cmap='gray')
+        ax.imshow(np.max(movie, axis = 0)[y0:y1, x0:x1], cmap='gray')
         for i in to_check:
-            plt.plot(csv[csv['colocID'] == i].x_0/px2nm - x0, csv[csv['colocID'] == i].y_0/px2nm - y0, color = 'red')
-            plt.plot(csv[csv['colocID'] == i].x_1/px2nm - x0, csv[csv['colocID'] == i].y_1/px2nm - y0, color = 'blue')
-            plt.plot(csv[csv['colocID'] == i].x/px2nm - x0, csv[csv['colocID'] == i].y/px2nm - y0, color = 'purple')
+            ax.plot(csv[csv['colocID'] == i].x_0/px2nm - x0, csv[csv['colocID'] == i].y_0/px2nm - y0, color = 'red')
+            ax.plot(csv[csv['colocID'] == i].x_1/px2nm - x0, csv[csv['colocID'] == i].y_1/px2nm - y0, color = 'blue')
+            ax.plot(csv[csv['colocID'] == i].x/px2nm - x0, csv[csv['colocID'] == i].y/px2nm - y0, color = 'purple')
     else: 
-        plt.figure()
-        plt.imshow(np.max(movie, axis = 0), cmap='gray')
+        ax.imshow(np.max(movie, axis = 0), cmap='gray')
         for i in to_check:
-            plt.plot(csv[csv['colocID'] == i].x_0/px2nm, csv[csv['colocID'] == i].y_0/px2nm, color = 'red')
-            plt.plot(csv[csv['colocID'] == i].x_1/px2nm, csv[csv['colocID'] == i].y_1/px2nm, color = 'blue')
-            plt.plot(csv[csv['colocID'] == i].x/px2nm, csv[csv['colocID'] == i].y/px2nm, color = 'purple')
-    plt.grid(False)
-    plt.axis('off')
-    plt.show()
-    plt.close()
+            ax.plot(csv[csv['colocID'] == i].x_0/px2nm, csv[csv['colocID'] == i].y_0/px2nm, color = 'red')
+            ax.plot(csv[csv['colocID'] == i].x_1/px2nm, csv[csv['colocID'] == i].y_1/px2nm, color = 'blue')
+            ax.plot(csv[csv['colocID'] == i].x/px2nm, csv[csv['colocID'] == i].y/px2nm, color = 'purple')
+    ax.grid(False)
+    ax.axis('off')
+    return fig
 
 #plot intensity profile of track from original version of SPIT
 def intensity_coloc_old(moviech0, locsch0, track_id, moviech1=None, locsch1=None, df_coloc_csv=None):
-
+    """
+    Creates a plot of the intensity of two colocalzing tracks over time, with vertical dash lines indicating where they start and stop colocalizing.
+    Only usable with coloc and then link pipeline. 
+    Needs to be properly finished
+    """
+    
     def create_mask(image_shape, contour):
         mask = np.ones(image_shape, dtype=bool)
         rr, cc = polygon(contour[:, 1], contour[:, 0], image_shape)
@@ -160,10 +161,10 @@ def intensity_coloc(csv, movie0, movie1, to_check, px2nm):
         to_check: colocID of the track to plot
         px2nm: pixel size in nm. 
         
-    ##TODO: Output:
+    Output:
         fig: matplotlib figure object
     """
-    # plt.figure()
+    fig, ax = plt.subplots()
     intensity0 = []
     intensity1 = []
     track = csv[csv.colocID == to_check].copy()
@@ -174,19 +175,18 @@ def intensity_coloc(csv, movie0, movie1, to_check, px2nm):
             track.at[index, 'im_int_0'] =  np.mean(movie0[row.t, int(row.y_0/px2nm)-1:int(row.y_0/px2nm)+1, int(row.x_0/px2nm)-1:int(row.x_0/px2nm)+1])/np.median(movie0[row.t])
         if not np.isnan(row.y_1):
             track.at[index, 'im_int_1'] = np.mean(movie1[row.t, int(row.y_1/px2nm)-1:int(row.y_1/px2nm)+1, int(row.x_1/px2nm)-1:int(row.x_1/px2nm)+1])/np.median(movie1[row.t])
-    plt.plot(track.t*2, (track.im_int_0).rolling(window=1).mean(), label='ch0') #/max(locs488.intensity)
-    plt.plot(track.t*2, (track.im_int_1).rolling(window=1).mean(), label='ch1') #/max(locs638.intensity)
+    ax.plot(track.t*2, (track.im_int_0).rolling(window=1).mean(), label='ch0') #/max(locs488.intensity)
+    ax.plot(track.t*2, (track.im_int_1).rolling(window=1).mean(), label='ch1') #/max(locs638.intensity)
     colocalized_df = track[(track['distance'] <= 300) & pd.notna(track['x']) & pd.notna(track['y'])]
     if not colocalized_df.empty:
         start_time = colocalized_df['t'].min()*2
         end_time = colocalized_df['t'].max()*2
-    plt.axvline(x=start_time, color='r', linestyle='--', label='start colocalization')
-    plt.axvline(x=end_time, color='r', linestyle='--', label='end colocalization')
-    plt.legend()
-    plt.xlabel('Time(sec)')
-    plt.ylabel('Pixel intensity/median \n bacgkrond intensity (AU)')   
-    plt.show()
-    plt.close()
+    ax.axvline(x=start_time, color='r', linestyle='--', label='start colocalization')
+    ax.axvline(x=end_time, color='r', linestyle='--', label='end colocalization')
+    ax.legend()
+    ax.set_xlabel('Time(sec)')
+    ax.set_ylabel('Pixel intensity/median \n bacgkrond intensity (AU)')   
+    return fig
         
 def dwell_times(folder, groups):
     #To_od: modify to allow different combinations of channels
@@ -257,17 +257,30 @@ def dwell_times(folder, groups):
     return dwell_times
 
 def hist_dwell(dw, to_plot, density, ylim = None, xstart = 0):
-    plt.figure()
+    """
+    Generates a histogram of the dwell times computed with def dell_times. 
+    input:
+        dw: pandas dataframe generated by def dwell_times
+        to_plot: list with groups to plot in the histogram. 
+        density: Boolean. With density = False y axis is in proportion. With density = True y axis is in number. 
+        ylim: max number in the y axis
+        xstart: min number in the x axis
+    """
+    
+    fig, ax = plt.subplots()
     for group in to_plot:
         subset = dw[dw['group'] == group]
-        plt.hist(subset['dwell_time'], density = density, bins=20, alpha=0.5, label=group)
+        ax.hist(subset['dwell_time'], density = density, bins=20, alpha=0.5, label=group)
     
-    plt.xlabel('Dwell Time')
-    plt.ylabel('Frequency')
-    plt.xlim(xstart)
-    plt.ylim(0, ylim)
-    plt.legend()
-    plt.show()
+    ax.set_xlabel('Dwell Time')
+    if density: 
+        ax.set_ylabel('Frequency')
+    else:
+        ax.set_ylabel('Count')
+    ax.set_xlim(xstart)
+    ax.set_ylim(0, ylim)
+    ax.legend()
+    return fig
 
 def diff_coefs(folder, groups, ch, min_len):
     """
@@ -325,28 +338,35 @@ def diff_coefs(folder, groups, ch, min_len):
     return all_Ds
 
 def box_D_condition(Ds, to_plot, ylim=None):
-    plt.figure()
+    """
+    Generates a boxplot of the diffusion coefficients extracted from the SPIT output in def diff_coefs. 
+    input:
+        Ds: pandas dataframe generated by def diff_coefs
+        to_plot: list with groups to plot in the histogram. 
+        ylim: max number in the y axis
+    """
+    fig, ax = plt.subplots()
     filtered_Ds = Ds[Ds['group'].isin(to_plot)]
     boxplot = filtered_Ds.boxplot(column='D_msd', by='group', showfliers=False, boxprops=dict(color='black'), 
-                                  medianprops=dict(color='black'), whiskerprops=dict(color='black'),capprops=dict(color='black'))
+                                  medianprops=dict(color='black'), whiskerprops=dict(color='black'), capprops=dict(color='black'), ax=ax)
 
     # Overlay datapoints with jitter
     for i, group in enumerate(to_plot):
         group_data = filtered_Ds[filtered_Ds['group'] == group]
         jitter = 0.1 * (np.random.rand(len(group_data)) - 0.5)
-        plt.scatter(np.full(len(group_data), i + 1) + jitter, group_data['D_msd'], color='red', alpha=0.5, s=2)
+        ax.scatter(np.full(len(group_data), i + 1) + jitter, group_data['D_msd'], color='red', alpha=0.5, s=2)
 
     # Remove all gridlines
-    plt.grid(False)
+    ax.grid(False)
     
-    plt.xlabel('')
-    plt.suptitle('')
-    plt.ylabel('D_msd (um^2/sec)')
-    plt.title('')
+    ax.set_xlabel('')
+    ax.set_ylabel('D_msd (um^2/sec)')
+    ax.set_title('')
+    fig.suptitle('')
     if ylim:
-        plt.ylim(0, ylim)
+        ax.set_ylim(0, ylim)
 
-    plt.show()
+    return fig
 
 def box_D_cell(Ds, to_plot, ylim=None):
     #TODO: STILL WORKING ON IT###
