@@ -48,6 +48,16 @@ class Plotter:
         self.ax.grid(visible, which=which, axis=axis, linestyle=linestyle, linewidth=linewidth)
     def save_plot(self, filename, dpi = 300):
         self.fig.savefig(filename,dpi = dpi, bbox_inches='tight', pad_inches=0.1)
+    def refresh(self, legend_loc='best'):
+        plt.ion()  # Ensure interactive mode is on
+        plt.figure(self.fig.number)  # Reactivate the figure
+        handles, labels = self.ax.get_legend_handles_labels()
+        if handles:
+            self.ax.legend(loc=legend_loc)
+        self.fig.canvas.draw()  # Redraw the canvas
+        self.fig.canvas.flush_events()  # Ensure updates are shown
+
+
 
 class LinePlotter(Plotter):
     def add_data(self, x, y, label="Line", color="blue"):
@@ -92,8 +102,16 @@ class BoxPlotter(Plotter):
                 self.ax.text((x1 + x2) * 0.5, y + y_offset, f"p = {p_val:.3e}", ha='center', va='bottom')
 
 class HistogramPlotter(Plotter):
-    def add_data(self, data, bins=10, label="Histogram", color="purple"):
-        self.ax.hist(data, bins=bins, label=label, color=color)
+    def __init__(self, xlabel="X-axis", ylabel="Y-axis", figsize=(6.4, 4.8)):
+        super().__init__(xlabel=xlabel, ylabel=ylabel, figsize=figsize)
+        self.colors = plt.rcParams['axes.prop_cycle'].by_key()['color']  # default matplotlib colors
+        self.color_index = 0
+
+    def add_data(self, data, bins=10, label="Histogram", alpha=0.5):
+        color = self.colors[self.color_index % len(self.colors)]
+        self.color_index += 1
+        self.ax.hist(data, bins=bins, label=label, color=color, alpha=alpha)
+
 
 class TrackPlotter(Plotter):
     def __init__(self, image, px2nm=108, title="Track Plot", xlabel="X (nm)", ylabel="Y (nm)", figsize = (6.4, 6.4)):
@@ -230,18 +248,52 @@ class Tracked_image:
         plotter.set_ylim(0)
         plotter.show_plot(legend_loc= legend_loc)
         return plotter
-    def extract_Ds(self, min_len = 10, channel = 'ch0'):
+    def extract_Ds(self, min_len=10, channel='ch0'):
         if channel == 'ch0':
             stats = self.stats0
         elif channel == 'ch1':
-            assert self.stats1 is not None, "stats1 is not provided."
-            stats = self.stats1
+            if self.stats1 is None:
+                # Return empty DataFrame with expected columns
+                return None
+            else:
+                stats = self.stats1
         else:
             raise ValueError("channel must be 'ch0' or 'ch1'")
+    
         columns_to_extract = ['track.id', 'cell_id', 'D_msd']
-        ds = stats[(stats['length'] >= min_len)][columns_to_extract]
-        ds = ds.dropna(subset = ['D_msd'])        
+        ds = stats[stats['length'] >= min_len][columns_to_extract]
+        ds = ds.dropna(subset=['D_msd'])
         return ds
+    def extract_dwell(self, min_len=10, max_dist = 250, ref='ch0'):
+        stats = self.coloc_stats
+        tracks = self.coloc_tracks
+        if all(isinstance(obj, pd.DataFrame) for obj in [stats, tracks]):
+            unique_colocIDs = stats[(stats['num_frames_coloc'] >min_len)]['colocID'].unique()
+            data = []
+            for i in unique_colocIDs:#[7:8]:
+                colocalized_df = tracks[(tracks['colocID'] == i) & (tracks['distance'] <= 300) & pd.notna(tracks['x']) & pd.notna(tracks['y'])]
+                if not colocalized_df.empty:
+                    start_time = colocalized_df['t'].min()*2
+                locs_ch0 = tracks[tracks.colocID == i][['x_0', 'y_0', 't', 'intensity_0']]
+                locs_ch0 = locs_ch0.dropna(axis = 0)
+                locs_ch1 = tracks[tracks.colocID == i][['x_1', 'y_1', 't', 'intensity_1']]
+                locs_ch1 = locs_ch1.dropna(axis = 0)
+                times_0 = {'ch0': locs_ch0.t, 'ch1': locs_ch1.t}.get(ref)
+                if min(times_0) * 2 < start_time:
+                    dt = start_time - min(times_0) * 2
+                    # Create a Series with the same columns
+                    other_ref = 'ch1' if ref == 'ch0' else 'ch0'
+                    track_ids = {'ch0': stats[stats.colocID == i]['track.id0'].values[0], 'ch1': stats[stats.colocID == i]['track.id1'].values[0]}
+                    data.append([i, track_ids.get(ref), track_ids.get(other_ref),
+                                          
+                                          stats[stats.colocID == i]['cell_id'].values[0],
+                                          dt])
+                    
+            dwell_times = pd.DataFrame(data, columns=['colocID', 'track.id_ref', 'track.id_binds', 'cell_id', 'dwell_time'])
+            return dwell_times
+        else:
+            return None
+     
 class Single_tracked_folder:
     def __init__(self, folder, ch0_hint = None, ch1_hint = None):
         self.folder = folder
@@ -436,14 +488,63 @@ class Dataset_tracked_folder:
             return aggregated_df
         else: 
             print("run count_number_cotracks first")
-    def get_Ds(self):
-        for i in tqdm(self._conditions_paths, desc = 'Extracting Ds...\n'):
+    def get_Ds(self, min_len = 10, channel = 'ch0'):
+        all_ds = []  # List to collect all DataFrames
+        box = BoxPlotter(xlabel="Conditions", ylabel="Diff. Coeff. (um^2/sec)")
+        for i, cond in tqdm(zip(self._conditions_paths, self.conditions), desc='Extracting Ds...\n'):
             print(f'\nAnalyzing {i}...')
+            ds_cond = []
             pathshdf = glob(i + '/**/**.hdf', recursive=True)
             paths_locs = list(set(os.path.dirname(file) for file in pathshdf))
             for j in paths_locs:
                 image = Single_tracked_folder(j).open_files()
-                print(image.extract_Ds())
+                ds = image.extract_Ds(min_len, channel)
+                if isinstance(ds, pd.DataFrame):
+                # Add columns at the beginning
+                    ds.insert(0, 'condition', cond)
+                    ds.insert(0, 'run', j)
+                    all_ds.append(ds)  # Accumulate
+                    ds_cond.append(ds)
+            final_cond = pd.concat(ds_cond, ignore_index=True)
+            box.add_box(final_cond.D_msd, cond)
+        # Concatenate all DataFrames into one
+        final_ds = pd.concat(all_ds, ignore_index=True)
+        # box.add_statistical_annotations()
+        return final_ds, box
+    def get_dwell(self, min_len = 10, ref = 'ch0', x0=0, xt=None, y0=0, yt=None):
+        all_dwell = []
+        hist = HistogramPlotter( xlabel="dwell_time(sec)", ylabel="Frequency")
+        for i, cond in tqdm(zip(self._conditions_paths, self.conditions), desc='Extracting Ds...\n'):
+            print(f'\nAnalyzing {i}...')
+            dwell_cond = []
+            pathshdf = glob(i + '/**/**colocsTracks_stats.hdf', recursive=True)
+            paths_locs = list(set(os.path.dirname(file) for file in pathshdf))
+            for j in paths_locs[0:1]:
+                pathsyaml = glob(j + '/**/**colocsTracks.yaml', recursive=True)
+                yaml = self._openyaml(pathsyaml)
+                image = Single_tracked_folder(j).open_files()
+                dwell = image.extract_dwell(min_len = min_len, max_dist = yaml['th'], ref = ref)
+                if isinstance(dwell, pd.DataFrame):
+                # # Add columns at the beginning
+                    dwell.insert(0, 'condition', cond)
+                    dwell.insert(0, 'run', j)
+                    all_dwell.append(dwell)  # Accumulate
+                    dwell_cond.append(dwell)
+            final_cond = pd.concat(dwell_cond, ignore_index=True)
+            hist.add_data(final_cond.dwell_time, label = f"{cond}")
+        final_dwell = pd.concat(all_dwell, ignore_index=True)
+        hist.set_labels()
+        hist.set_xlim(x0, xt)
+        hist.set_ylim(y0, yt)
+        hist.show_plot()
+        # box.add_statistical_annotations()
+        return final_dwell, hist
+    def validate(self):
+        print("Just a reminder that most of the time the whole dataset should be analyzed using the same parameters.")
+        print("Here are the parameters for the first folder in the dataset that has colocalized tracks:")
+        yaml = self._openyaml(glob(self.folder + r'/**/*_colocsTracks.yaml', recursive=True))
+        for i, j in enumerate(yaml.items()):
+            print(f"{j[0]}: {j[1]}")
     def _get_px2nm(self): #if self.transform = True, this will get the correct naclib coefficients (Annapurna VS K2)
         resultPath  = glob(self.folder + '/**/**result.txt', recursive=True)[0]
         result_txt  = tools.read_result_file(resultPath) #this opens the results.txt file to check the microscope used. 
