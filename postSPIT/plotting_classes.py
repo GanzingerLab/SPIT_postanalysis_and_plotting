@@ -9,6 +9,29 @@ from glob import glob
 import yaml
 from spit import tools
 import re
+from skimage.draw import polygon
+from skimage.measure import label, regionprops
+from skimage.morphology import binary_opening, binary_closing, disk, remove_small_objects, remove_small_holes
+import cv2
+from skimage.filters import (
+    threshold_otsu,
+    threshold_yen,
+    threshold_triangle,
+    threshold_li,
+    threshold_mean,
+    threshold_minimum,
+    threshold_isodata, 
+    threshold_local
+)
+import tifffile
+import trackpy as tp
+import logging
+from collections import defaultdict
+from scipy.ndimage import median_filter
+from scipy.stats import linregress
+from skimage.feature import local_binary_pattern
+logging.getLogger('trackpy').setLevel(logging.ERROR)
+
 
 class Plotter:
     def __init__(self, title="Plot", xlabel="X-axis", ylabel="Y-axis", figsize = (6.4, 4.8)):
@@ -56,8 +79,6 @@ class Plotter:
             self.ax.legend(loc=legend_loc)
         self.fig.canvas.draw()  # Redraw the canvas
         self.fig.canvas.flush_events()  # Ensure updates are shown
-
-
 
 class LinePlotter(Plotter):
     def add_data(self, x, y, label="Line", color="blue"):
@@ -112,7 +133,6 @@ class HistogramPlotter(Plotter):
         self.color_index += 1
         self.ax.hist(data, bins=bins, label=label, color=color, alpha=alpha)
 
-
 class TrackPlotter(Plotter):
     def __init__(self, image, px2nm=108, title="Track Plot", xlabel="X (nm)", ylabel="Y (nm)", figsize = (6.4, 6.4)):
         super().__init__(title, xlabel, ylabel, figsize)
@@ -136,7 +156,7 @@ class TrackPlotter(Plotter):
         self.fig.savefig(filename,dpi = dpi, bbox_inches='tight', pad_inches=0)
 
 class Tracked_image:
-    def __init__(self, ch0, tracks0, stats0, ch1=None, tracks1=None, stats1=None, coloc_tracks=None, coloc_stats=None, px2nm=108):
+    def __init__(self, ch0, tracks0, stats0, ch1=None, tracks1=None, stats1=None, coloc_tracks=None, coloc_stats=None, px2nm=108, folder = None):
         #checking data types
         assert isinstance(ch0, TiffMultiMap), "'ch0' must be a picasso.io.TiffMultiMap object"
         assert isinstance(tracks0, pd.DataFrame), "'tracks0' must be a pd.DataFrame object"
@@ -163,6 +183,7 @@ class Tracked_image:
         self.coloc_tracks = coloc_tracks
         self.coloc_stats = coloc_stats
         self.px2nm = px2nm
+        self.folder = folder
     def plot_tracks(self, to_check, channel='ch0'):
         if channel == 'ch0':
             image = self.ch0
@@ -293,7 +314,495 @@ class Tracked_image:
             return dwell_times
         else:
             return None
-     
+    def split_cells(self):
+        #obtain unique contours
+        unique_contours = self.stats0.loc[self.stats0['contour'].apply(lambda x: str(x)).drop_duplicates().index, 'contour']
+        unique_centroids = self.stats0.loc[self.stats0['centroid'].apply(lambda x: str(x)).drop_duplicates().index, 'centroid']
+        #initilize variable to save output
+        self.sep_cells = []
+        self.contours = []
+        self.centroids = []
+        #for each contour
+        for i, j in zip(unique_contours, unique_centroids):
+            #extract the bounding box (the min and max in each direction)
+            x0, x1 = int(min(i[:, 0])), int(max(i[:, 0]))
+            y0, y1 = int(min(i[:, 1])), int(max(i[:, 1]))
+            #append a list containing each of the bounding-bix cropped images 
+            # print(x0, x1, y0, y1)
+            self.sep_cells.append([self.ch0[:, y0:y1, x0:x1], self.ch1[:, y0:y1, x0:x1]])
+            #correct the contour by substracting x0 and y0, then append it into the list
+            corr = i.copy()
+            corr[:, 0] -= x0
+            corr[:, 1] -= y0
+            corr_cen = j.copy()
+            corr_cen[:, 0] -= x0
+            corr_cen[:, 1] -= y0
+            self.contours.append(corr)
+            self.centroids.append(corr_cen)
+    def analyze_clusters_protein(self, min_size = 10,ch='ch0', th_method = 'li', save_videos = False):
+        """
+        Analyze protein clusters per cell by thresholding and tracking features across frames.
+    
+        Parameters:
+        -----------
+        min_size : int
+            Minimum size of detected cluster regions.
+        ch : str
+            Channel to analyze: 'ch0' or 'ch1'.
+        save_videos : bool
+            Whether to generate debug videos per cell.
+    
+        Returns:
+        --------
+        clusters_binary : list of 3D np.array
+            Binary masks of detected clusters.
+        result : pd.DataFrame
+            Region properties per frame.
+        linked_df : pd.DataFrame
+            Tracked cluster features across frames.
+        """
+        self.split_cells()
+        clusters_binary = []
+        all_props = []
+        self.cluster_contours = {}  # Store contours by cell/frame/label
+
+        for i in range(len(self.sep_cells)):
+            if ch == 'ch0':
+                to_work = self.sep_cells[i][0]
+            elif ch == 'ch1':
+                to_work = self.sep_cells[i][1]
+            to_work = median_filter(to_work, size=(3, 1, 1))
+
+            mask = self._create_mask(to_work[0].shape, self.contours[i])
+            if th_method == 'li':
+                thresh = threshold_li(to_work)
+            elif th_method == 'otsu':
+                thresh = threshold_otsu(to_work)
+            else:
+                raise ValueError(f'{th_method} is not a valid thresholding method')
+            binary_stack = np.array([
+                remove_small_objects(binary_closing((frame > thresh) & mask), min_size=min_size)
+                for frame in to_work])
+            binary_stack_smoothed = median_filter(binary_stack.astype(np.uint8), size=(3, 1, 1))
+            combined_stack = binary_stack | binary_stack_smoothed
+            clusters_binary.append(combined_stack)
+
+            if i not in self.cluster_contours:
+                self.cluster_contours[i] = {}
+
+            for frame_num, binary_frame in enumerate(binary_stack):
+                if frame_num not in self.cluster_contours[i]:
+                    self.cluster_contours[i][frame_num] = {}
+
+                labeled = label(binary_frame)
+
+                for region in regionprops(labeled, intensity_image=to_work[frame_num]):
+                    if region.area <= min_size:
+                        continue
+
+                    region_mask = (labeled == region.label).astype(np.uint8)
+                    contours, _ = cv2.findContours(region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                    if len(contours) == 0:
+                        contour_list = np.array([]).reshape(0, 2)
+                        perimeter = np.nan
+                        solidity = np.nan
+                        area = 0
+                    else:
+                        cnt = max(contours, key=cv2.contourArea)
+                        perimeter = cv2.arcLength(cnt, True)
+                        contour_list = cnt.reshape(-1, 2)
+                        area = cv2.contourArea(cnt)
+                        hull_area = cv2.contourArea(cv2.convexHull(cnt))
+                        solidity = area / hull_area if hull_area > 0 else np.nan
+
+                    circularity = (4 * np.pi * area / (perimeter ** 2)) if perimeter and perimeter > 1e-6 else np.nan
+
+                    M = cv2.moments(region_mask)
+                    if M['m00'] != 0:
+                        centroid_row = M['m01'] / M['m00']
+                        centroid_col = M['m10'] / M['m00']
+                    else:
+                        centroid_row, centroid_col = region.centroid
+
+                    bbox = region.bbox
+                    region_mask_bool = (labeled == region.label)
+                    median_int_out = np.median(to_work[frame_num][~mask])
+                    median_int = np.median(to_work[frame_num][region_mask_bool])
+                    sum_int = np.sum(to_work[frame_num][region_mask_bool])
+                    
+                    # Additional shape features
+                    minr, minc, maxr, maxc = bbox
+                    bbox_height = maxr - minr
+                    bbox_width = maxc - minc
+                    aspect_ratio = region.major_axis_length / region.minor_axis_length if region.minor_axis_length > 0 else np.nan
+                    extent = region.area / ((bbox_height) * (bbox_width)) if bbox_height > 0 and bbox_width > 0 else np.nan
+                    eccentricity = region.eccentricity if hasattr(region, 'eccentricity') else np.nan
+
+                    # LBP histogram
+                    # Each lbp_i value represents the proportion of pixels in the cluster that exhibit a specific type of local texture:
+                    #High lbp_0: Very smooth, flat regions.
+                    # High lbp_1–lbp_8: Structured textures like edges or corners.
+                    # High lbp_9: Irregular or noisy textures.
+                    # So, for example:
+                    
+                    # A mature synapse might show high values in lbp_0 and lbp_1–lbp_4 (smooth and organized).
+                    # An immature synapse might have higher lbp_9 (more chaotic texture).
+                    # lbp = local_binary_pattern(to_work * region_mask_bool, P=8, R=1, method='uniform')
+                    # lbp_hist, _ = np.histogram(lbp[region_mask_bool], bins=np.arange(0, 11), density=True)
+                    # lbp_features = {f'lbp_{i}': lbp_hist[i] for i in range(len(lbp_hist))}
+                    
+                    props = {
+                        'cell_id': i,
+                        'frame': frame_num,
+                        'area': area * self.px2nm * self.px2nm,
+                        'sum_int': sum_int,
+                        'norm_sum_int': sum_int / median_int_out,
+                        'med_int': median_int,
+                        'norm_med_int': median_int / median_int_out,
+                        'dist_cent': np.linalg.norm(np.array([centroid_row, centroid_col]) - self.centroids[i][0]) * self.px2nm,
+                        'solidity': solidity,
+                        'perimeter': perimeter * self.px2nm,
+                        'circularity': circularity,
+                        'centroid_row': centroid_row,
+                        'centroid_col': centroid_col,
+                        'bbox_min_row': bbox[0],
+                        'bbox_min_col': bbox[1],
+                        'bbox_max_row': bbox[2],
+                        'bbox_max_col': bbox[3],
+                        'contour': contour_list, 
+                        'label': region.label,
+                        'aspect_ratio': aspect_ratio,
+                        'extent': extent,
+                        'eccentricity': eccentricity
+                    }
+                    # props.update(lbp_features)
+                    all_props.append(props)
+
+                    # Store contour by label for this frame & cell
+                    self.cluster_contours[i][frame_num][region.label] = contour_list
+
+        result = pd.DataFrame(all_props)
+        results_stats = self._summarize_clusters_per_cell_frame(result)
+        df_tp = result.rename(columns={"centroid_col": "x", "centroid_row": "y", "norm_sum_int": "mass", "area": "size"})
+        df_tp['label'] = result['label']
+
+        linked_all = []
+        for cell_id, df_cell in df_tp.groupby('cell_id'):
+            linked = tp.link_df(df_cell, search_range=25, memory=0, adaptive_step=0.95,
+            adaptive_stop = 2, link_strategy='hybrid')
+            linked['cell_id'] = cell_id
+            linked_all.append(linked)
+            
+        linked_df = pd.concat(linked_all, ignore_index=True)
+        linked_stats = self._summarize_per_track(linked_df)
+        if save_videos:
+            self._save_centroid_videos_per_cell(clusters_binary, result, self.sep_cells, ch=ch, square_size=3)
+
+        return clusters_binary, result, results_stats, linked_df, linked_stats
+    def _summarize_clusters_per_cell_frame(self, result_df):
+        summary = (
+            result_df
+            .groupby(['cell_id', 'frame'])
+            .agg({
+                'label': 'count',
+                'area': ['mean', self._safe_std],
+                'sum_int': ['mean', self._safe_std],
+                'norm_sum_int': ['mean', self._safe_std],
+                'med_int': ['mean', self._safe_std],
+                'norm_med_int': ['mean', self._safe_std],
+                'dist_cent': ['mean', self._safe_std],
+                'solidity': ['mean', self._safe_std],
+                'perimeter': ['mean', self._safe_std],
+                'circularity': ['mean', self._safe_std],
+                'aspect_ratio': ['mean', self._safe_std],
+                'eccentricity': ['mean', self._safe_std],
+                'extent': ['mean', self._safe_std],
+                # **{f'lbp_{i}': ['mean', self._safe_std] for i in range(10)}
+                # **{f'haralick_{i}': ['mean', safe_std] for i in range(13)}
+            })
+        )
+        summary.columns = [('_'.join(col).replace('__safe_std', '_std')) for col in summary.columns]
+        summary = summary.rename(columns={'label_count': 'num_clusters'})
+        summary = summary.reset_index()
+        return summary
+
+    def _safe_std(self, x):
+        return x.std() if len(x) > 1 else 0
+    def _summarize_per_track(self, linked_df, min_frames=5):
+        features = []
+        
+        for (cell_id, particle), group in linked_df.groupby(['cell_id', 'particle']):
+            group = group.sort_values('frame')
+            if len(group) < min_frames:
+                continue
+    
+            frames = group['frame'].values
+            # Convert coordinates to nanometers
+            x = group['x'].values * self.px2nm
+            y = group['y'].values * self.px2nm
+            dists_to_center = group['dist_cent'].values  # already in nm if set that way
+            
+            # Compute frame-to-frame displacements and instantaneous speeds
+            dx = np.diff(x)
+            dy = np.diff(y)
+            disp = np.sqrt(dx**2 + dy**2)  # instantaneous displacement (nm)
+            
+            total_distance = np.sum(disp)
+            net_displacement = np.linalg.norm([x[-1] - x[0], y[-1] - y[0]])
+            directionality_ratio = net_displacement / total_distance if total_distance > 0 else 0
+            # TODO: convert frame difference to actual time if needed
+            duration = frames[-1] - frames[0]
+            speed = total_distance / duration if duration > 0 else 0  # mean speed (nm per frame)
+    
+            # Radial regression from dists_to_center vs frames (slope in nm per frame)
+            slope, intercept, r_value, p_value, std_err = linregress(frames, dists_to_center)
+    
+            # Compute instantaneous angles for movement
+            angles = np.arctan2(dy, dx)
+            # Differences between successive angles (turning angles)
+            angle_diff = np.diff(angles)  
+            # Unwrap to reduce artefactual jumps at ±pi
+            angle_diff = np.unwrap(angle_diff)
+            angle_var = np.var(angle_diff)  # overall variance
+    
+            # --- New Temporal Features ---
+            # Instantaneous speed trend: regression on disp versus frame (for frames[1:])
+            if len(disp) > 1:
+                speed_reg = linregress(frames[1:], disp)
+                speed_slope = speed_reg.slope  # change in instantaneous speed (nm per frame^2)
+            else:
+                speed_slope = np.nan
+    
+            # Turning rate trend: regression on absolute turning angles versus index (0, 1, 2,...)
+            if len(angle_diff) > 1:
+                turning_reg = linregress(np.arange(len(angle_diff)), np.abs(angle_diff))
+                turning_rate_slope = turning_reg.slope  # change in turning (radians per frame)
+            else:
+                turning_rate_slope = np.nan
+    
+            # Bounding box area (in nm^2)
+            bbox_area = (np.max(x) - np.min(x)) * (np.max(y) - np.min(y))
+            
+            features.append({
+                'cell_id': cell_id,
+                'particle': particle,
+                'track_duration': duration,
+                'mean_speed': speed,
+                'net_displacement': net_displacement,
+                'directionality_ratio': directionality_ratio,
+                'radial_slope': slope,
+                'radial_r_squared': r_value**2,
+                'radial_change': dists_to_center[-1] - dists_to_center[0],
+                'angle_variance': angle_var,
+                'motion_bbox_area': bbox_area,
+                # New features capturing temporal trends:
+                'speed_slope': speed_slope,
+                'turning_rate_slope': turning_rate_slope,
+            })
+        
+        return pd.DataFrame(features)
+    def _save_centroid_videos_per_cell(self, clusters_binary, all_props, sep_cells, ch='ch0', square_size=3, output_dir='./'):
+        ch_idx = 0 if ch == 'ch0' else 1
+        if self.folder != None:
+            output_dir = self.folder+r'\cluster_analysis'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        for cell_idx, cell in enumerate(sep_cells):
+            num_frames = cell[ch_idx].shape[0]
+
+            orig_stack = []
+            bin_stack = []
+
+            # Filter dataframe for this cell
+            cell_props = all_props[all_props['cell_id'] == cell_idx]
+
+            for frame_num in range(num_frames):
+                orig_frame = cell[ch_idx][frame_num]
+                binary_frame = clusters_binary[cell_idx][frame_num]
+
+                # Normalize original image to 0–255
+                norm = (orig_frame - orig_frame.min()) / (orig_frame.ptp() + 1e-9)
+                orig_rgb = (np.dstack([norm] * 3) * 255).astype(np.uint8)
+
+                bin_rgb = np.dstack([binary_frame.astype(np.uint8) * 255] * 3)
+
+                # Filter centroids for this frame
+                frame_props = cell_props[cell_props['frame'] == frame_num]
+
+                for _, row in frame_props.iterrows():
+                    r, c = int(round(row['centroid_row'])), int(round(row['centroid_col']))
+                    self._paint_red_square(orig_rgb, (r, c), size=square_size)
+                    self._paint_red_square(bin_rgb, (r, c), size=square_size)
+
+                orig_stack.append(orig_rgb)
+                bin_stack.append(bin_rgb)
+
+            # Save TIFFs
+            orig_path = f"{output_dir}\cell{cell_idx}_centroids.tif"
+            bin_path = f"{output_dir}\cell{cell_idx}_binary_centroids.tif"
+
+            tifffile.imwrite(orig_path, np.array(orig_stack), photometric='rgb')
+            tifffile.imwrite(bin_path, np.array(bin_stack), photometric='rgb')
+            print(f"✅ Saved Cell {cell_idx} to:\n- {orig_path}\n- {bin_path}")
+    def _paint_red_square(self, image, center, size=3, color=None):
+        """Paint a red square centered at (row, col) in the RGB image."""
+        if color is None:
+            color = [255, 0, 0]  # red
+
+        r, c = center
+        half = size // 2
+        r_start = max(r - half, 0)
+        r_end = min(r + half + 1, image.shape[0])
+        c_start = max(c - half, 0)
+        c_end = min(c + half + 1, image.shape[1])
+        image[r_start:r_end, c_start:c_end] = color        
+    def _create_mask(self, image_shape, contour):
+        mask = np.zeros(image_shape, dtype=bool)
+        rr, cc = polygon(contour[:, 1], contour[:, 0], image_shape)
+        mask[rr, cc] = True
+        return mask
+    def _detect_splits_and_merges(self, linked_df, distance_threshold=20, frame_gap=1):
+        linked_df = linked_df.copy()
+        linked_df['split_event'] = False
+        linked_df['merge_event'] = False
+
+        frames = sorted(linked_df['frame'].unique())
+
+        # Build contours dict: {frame: {particle: contour_points}}
+        polys_by_frame = {}
+
+        for frame in frames:
+            polys_by_frame[frame] = {}
+            frame_data = linked_df[linked_df['frame'] == frame]
+
+            for _, row in frame_data.iterrows():
+                particle = row['particle']
+                contour_points = self.contours_by_frame_and_particle.get(frame, {}).get(particle, None)
+                if contour_points is None or len(contour_points) < 3:
+                    continue
+                polys_by_frame[frame][particle] = contour_points
+
+        for t in frames[:-frame_gap]:
+            current_contours = polys_by_frame.get(t, {})
+            next_contours = polys_by_frame.get(t + frame_gap, {})
+
+            if not current_contours or not next_contours:
+                continue
+
+            # Detect merges: many → one
+            for next_part, next_cnt in next_contours.items():
+                close_parents = []
+                for cur_part, cur_cnt in current_contours.items():
+                    dist = self._contour_min_distance(cur_cnt, next_cnt)
+                    if dist < distance_threshold:
+                        close_parents.append(cur_part)
+                if len(close_parents) > 1:
+                    linked_df.loc[
+                        (linked_df['frame'] == t + frame_gap) & (linked_df['particle'] == next_part),
+                        'merge_event'
+                    ] = True
+
+            # Detect splits: one → many
+            for cur_part, cur_cnt in current_contours.items():
+                close_children = []
+                for next_part, next_cnt in next_contours.items():
+                    dist = self._contour_min_distance(cur_cnt, next_cnt)
+                    if dist < distance_threshold:
+                        close_children.append(next_part)
+                if len(close_children) > 1:
+                    linked_df.loc[
+                        (linked_df['frame'] == t) & (linked_df['particle'] == cur_part),
+                        'split_event'
+                    ] = True
+
+        return linked_df
+    def _contour_min_distance(self, cnt1, cnt2):
+        """
+        Compute the minimum Euclidean distance between two contours (Nx2 numpy arrays).
+        """
+        # cnt1 and cnt2 are arrays of shape (N_points, 2)
+        # Compute all pairwise distances and find the minimum
+        dists = np.sqrt(np.sum((cnt1[:, None, :] - cnt2[None, :, :])**2, axis=2))
+        return np.min(dists)
+    def _get_contour_for_particle(self, cell_id, frame, particle):
+        """
+        Retrieve stored contour points for a given cell/frame/particle.
+        Returns None if not found.
+        """
+        return self.cluster_contours.get(cell_id, {}).get(frame, {}).get(particle, None)
+    def _detect_merges_proximity_based(self, linked_df, proximity_threshold=15, frame_gap=1):
+        """
+        Detect merges based on proximity of clusters at time t and disappearance at t+1.
+    
+        Parameters:
+        -----------
+        linked_df : pd.DataFrame
+            DataFrame from trackpy with particle tracks and frames.
+        proximity_threshold : float
+            Distance (in pixels) under which two clusters are considered "close".
+        frame_gap : int
+            How many frames ahead to check for merging.
+        
+        Returns:
+        --------
+        pd.DataFrame : updated linked_df with a new 'merge_event_prox' column
+        """
+        import numpy as np
+    
+        linked_df = linked_df.copy()
+        linked_df['merge_event_prox'] = False
+    
+        frames = sorted(linked_df['frame'].unique())
+    
+        # Build contour lookup
+        contours_by_frame = self.contours_by_frame_and_particle
+    
+        for t in frames[:-frame_gap]:
+            frame_df = linked_df[linked_df['frame'] == t]
+            next_df = linked_df[linked_df['frame'] == t + frame_gap]
+    
+            current_particles = frame_df['particle'].values
+            next_particles = next_df['particle'].values
+    
+            for i, row1 in frame_df.iterrows():
+                p1 = row1['particle']
+                cnt1 = contours_by_frame.get(t, {}).get(p1, None)
+                if cnt1 is None or len(cnt1) < 3:
+                    continue
+    
+                for j, row2 in frame_df.iterrows():
+                    p2 = row2['particle']
+                    if p1 >= p2:
+                        continue  # avoid duplicate pairs
+    
+                    cnt2 = contours_by_frame.get(t, {}).get(p2, None)
+                    if cnt2 is None or len(cnt2) < 3:
+                        continue
+    
+                    # Check if these two are close enough to consider for merging
+                    dist = self._contour_min_distance(np.array(cnt1), np.array(cnt2))
+                    if dist < proximity_threshold:
+                        # Now check if only one object exists nearby in next frame
+                        possible_merge_target = []
+                        for _, row_next in next_df.iterrows():
+                            p_next = row_next['particle']
+                            cnt_next = contours_by_frame.get(t + frame_gap, {}).get(p_next, None)
+                            if cnt_next is None or len(cnt_next) < 3:
+                                continue
+    
+                            d1 = self._contour_min_distance(np.array(cnt1), np.array(cnt_next))
+                            d2 = self._contour_min_distance(np.array(cnt2), np.array(cnt_next))
+    
+                            if d1 < proximity_threshold and d2 < proximity_threshold:
+                                possible_merge_target.append(p_next)
+    
+                        # If exactly one such object exists in the next frame, mark both as merging
+                        if len(possible_merge_target) == 1:
+                            linked_df.loc[(linked_df['frame'] == t) & (linked_df['particle'].isin([p1, p2])), 'merge_event_prox'] = True
+    
+        return linked_df
+
 class Single_tracked_folder:
     def __init__(self, folder, ch0_hint = None, ch1_hint = None):
         self.folder = folder
@@ -322,7 +831,8 @@ class Single_tracked_folder:
                                    stats1,
                                    coloc_tracks,
                                    coloc_stats, 
-                                   self._get_px2nm()                     
+                                   self._get_px2nm(),   
+                                   self.folder
                                    )
             return image1
         elif not yaml_file and len(glob(self.folder + '/**/**_locs_nm_trackpy.csv', recursive=True)) == 2:
@@ -348,7 +858,8 @@ class Single_tracked_folder:
                                    ch1, 
                                    tracks1, 
                                    stats1, 
-                                   px2nm = self._get_px2nm()                     
+                                   px2nm = self._get_px2nm(), 
+                                   folder = self.folder
                                    )
             return image1
         elif not yaml_file and len(glob(self.folder + '/**/**_locs_nm_trackpy.csv', recursive=True)) == 1:
@@ -359,7 +870,8 @@ class Single_tracked_folder:
                                    ch0,
                                    tracks0, 
                                    stats0,
-                                   px2nm = self._get_px2nm()                     
+                                   px2nm = self._get_px2nm(), 
+                                   folder = self.folder
                                    )
             return image1
         else: 
