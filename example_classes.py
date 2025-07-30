@@ -26,7 +26,7 @@ image0 = plc.Tracked_image(
 #%%
 ##open analysis object the easy way
 directory = r'D:\Data\Chi_data\first data\output2\Run00002'
-#(optional) You can check what is there analyzed in the folder with .validet()
+#(optional) You can check what is there analyzed in the folder with .validate()
 plc.Single_tracked_folder(directory).validate()
 # use .open_files() to open the analysis object
 image1 = plc.Single_tracked_folder(directory).open_files()
@@ -51,8 +51,10 @@ image1.plot_colocs([248]) #in here we plot the coloc track (track in ch0, track 
 #plot.save_plot('path', dpi = 300)
 #%%
 image1.intensity_coloc(470, 'upper left', 'CD19', 'Zap70') #in here we plot the intensities over time of a coloc track. We pass the track ID (not in a list now!)
-                                                            # then as optional we can pass the location of the legend, and the labels for ch0 and ch1. 
-#I still have to implement intensity plotting for a single channel (for one or multiple tracks)
+                                                            # then as optional we can pass the location of the legend, and the labels for ch0 and ch1.
+                                                            
+# TODO: #I still have to implement intensity plotting for a single channel (for one or multiple tracks)
+
 #%%
 #there is also the option to extract the diffusion coefficients. I will also implement extratcing dwell times in the future. Upon request, I
 #can implement more data extraction. 
@@ -69,7 +71,7 @@ a = plc.Dataset_tracked_folder(r'D:\Data\Chi_data\20250414\to_track')
 a.validate()
 
 #%%
-#we can seledct if we only want to work with a subset of the conditions. Migth be sometimes interesting to analyze only a subset of the data. 
+#we can select if we only want to work with a subset of the conditions. Migth be sometimes interesting to analyze only a subset of the data. 
 a.select_conditions([0, 1])
 #%%
 #We can count the number of colocalized tracks. 
@@ -90,7 +92,6 @@ Ds_df, box = a.get_Ds(min_len=0, channel = 'ch1')
 #The reference channel is the channel which has first a track and then the track from the other channel joins. 
 #The code outputs a histogram. The bars will be half transparent so we see all histograms. But we can reorder the histogram 
 #from back to fron using .select_conditions. 
-#to define 
 a.select_conditions([1, 0, 3,2])
 dwell_df, hist = a.get_dwell(min_len = 10, ref = 'ch0')
 #%%
