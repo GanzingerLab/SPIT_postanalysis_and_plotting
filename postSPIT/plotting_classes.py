@@ -324,15 +324,16 @@ class Tracked_image:
             return None
     def split_cells(self):
         #obtain unique contours
-        roi_contours = []
-        roi_centroids = []
+        roi_contours = {}
+        roi_centroids = {}
         if self.folder:
-            rois = natsorted(glob(os.path.join(self.folder+"/*.roi")))  
+            rois = natsorted(glob(os.path.join(self.folder+"/*.roi"))) 
             for roi in rois:
+                    cell_id = int(re.search(r'roi(\d+)\.roi$', roi).group(1))
                     roi_contour = tools.get_roi_contour(roi)
                     roi_centroid = tools.get_roi_centroid(roi_contour)
-                    roi_contours.append(roi_contour)
-                    roi_centroids.append(roi_centroid)
+                    roi_contours[cell_id] = roi_contour
+                    roi_centroids[cell_id] = roi_centroid
             unique_contours = pd.Series(roi_contours)
             unique_centroids = pd.Series(roi_centroids)
         else:
@@ -341,17 +342,21 @@ class Tracked_image:
 
         
         #initilize variable to save output
-        self.sep_cells = []
-        self.contours = []
-        self.centroids = []
+        self.sep_cells = {}
+        self.contours = {}
+        self.centroids = {}
         #for each contour
-        for i, j in zip(unique_contours, unique_centroids):
+        
+        for cell_id in unique_contours.index:
+            i = unique_contours[cell_id]
+            j = unique_centroids[cell_id]
+
             #extract the bounding box (the min and max in each direction)
             x0, x1 = int(min(i[:, 0])), int(max(i[:, 0]))
             y0, y1 = int(min(i[:, 1])), int(max(i[:, 1]))
             #append a list containing each of the bounding-bix cropped images 
             # print(x0, x1, y0, y1)
-            self.sep_cells.append([self.ch0[:, y0:y1, x0:x1], self.ch1[:, y0:y1, x0:x1]])
+            self.sep_cells[cell_id] = [self.ch0[:, y0:y1, x0:x1], self.ch1[:, y0:y1, x0:x1]]
             #correct the contour by substracting x0 and y0, then append it into the list
             corr = i.copy()
             corr[:, 0] -= x0
@@ -359,8 +364,8 @@ class Tracked_image:
             corr_cen = j.copy()
             corr_cen[:, 0] -= x0
             corr_cen[:, 1] -= y0
-            self.contours.append(corr)
-            self.centroids.append(corr_cen)
+            self.contours[cell_id] = corr
+            self.centroids[cell_id] = corr_cen
     def analyze_clusters_protein(self, min_size = 80,ch='ch0', th_method = 'li_local', global_th_mode = 'max', window_size = 15, p = 2, q= 6, filter_spots = True, save_videos = False):
         """
         Analyze protein clusters per cell by thresholding and tracking features across frames.
@@ -376,7 +381,7 @@ class Tracked_image:
     
         Returns:
         --------
-        clusters_binary : list of 3D np.array
+        clusters_binary : dict of 3D np.array
             Binary masks of detected clusters.
         result : pd.DataFrame
             Region properties per frame.
@@ -384,11 +389,11 @@ class Tracked_image:
             Tracked cluster features across frames.
         """
         self.split_cells()
-        clusters_binary = []
+        clusters_binary = {}
         all_props = []
         self.cluster_contours = {}  # Store contours by cell/frame/label
 
-        for i in range(len(self.sep_cells)):
+        for i in self.sep_cells.keys():
             if ch == 'ch0':
                 to_work = self.sep_cells[i][0]
             elif ch == 'ch1':
@@ -407,7 +412,7 @@ class Tracked_image:
                 binary_stack = self._remove_small_objects_per_frame(binary_opening((binary_closing(local_mask & global_mask))), min_size = min_size)
             else:
                 binary_stack = global_mask
-            clusters_binary.append(binary_stack)
+            clusters_binary[i]= binary_stack
             mask = self._create_mask(to_work[0].shape, self.contours[i])
             if i not in self.cluster_contours:
                 self.cluster_contours[i] = {}
@@ -511,12 +516,12 @@ class Tracked_image:
         self.linked_clusters_stats[ch] = linked_stats
         spots = None
         if filter_spots:
-            spots = self.combine_clusters_and_spots(channel = ch)
+            spots = self.remove_spots_within_clusters(channel = ch)
         if save_videos:
             self._save_centroid_videos_per_cell(clusters_binary, result, self.sep_cells, ch=ch, square_size=1, filtered_spots = spots)
         
         return clusters_binary, result, results_stats, linked_df, linked_stats
-    def combine_clusters_and_spots(self, channel = 'ch0'):
+    def remove_spots_within_clusters(self, channel = 'ch0'):
         #TODO: fix issue with ROIs: if one ROI does not have tracks, the rois are not properly assigned. --> probably fix in SPIT.link by making the cell_id columns have the correct roi number. 
         clusters = self.result_cluster_analysis[channel].copy()
         if channel == 'ch0':
@@ -761,19 +766,19 @@ class Tracked_image:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
     
-        for cell_idx, cell in enumerate(sep_cells):
+        for cell_id, cell in sep_cells.items():
             num_frames = cell[ch_idx].shape[0]
     
             orig_stack = []
             bin_stack = []
     
-            cell_props = all_props[all_props['cell_id'] == cell_idx]
+            cell_props = all_props[all_props['cell_id'] == cell_id]
             if filtered_spots is not None:
-                cell_spots = filtered_spots[filtered_spots['cell_id'] == cell_idx]
+                cell_spots = filtered_spots[filtered_spots['cell_id'] == cell_id]
     
             for frame_num in range(num_frames):
                 orig_frame = cell[ch_idx][frame_num]
-                binary_frame = clusters_binary[cell_idx][frame_num]
+                binary_frame = clusters_binary[cell_id][frame_num]
     
                 norm = (orig_frame - orig_frame.min()) / (orig_frame.ptp() + 1e-9)
                 orig_rgb = (np.dstack([norm] * 3) * 255).astype(np.uint8)
@@ -789,22 +794,23 @@ class Tracked_image:
                     self._paint_red_square(orig_rgb, (r, c), size=square_size)
                     self._paint_red_square(bin_rgb, (r, c), size=square_size)
     
-                # 🟢 Draw filtered spots if provided
                 if filtered_spots is not None:
                     frame_spots = cell_spots[cell_spots['t'] == frame_num]
                     for _, spot in frame_spots.iterrows():
                         r, c = int(round(spot['y_per_cell'])), int(round(spot['x_per_cell']))
-                        self._paint_red_square(orig_rgb, (r, c), size=square_size, color = [255, 255, 0])
+                        self._paint_red_square(orig_rgb, (r, c), size=square_size, color=[255, 255, 0])
+                        self._paint_red_square(bin_rgb, (r, c), size=square_size, color=[255, 255, 0])
     
                 orig_stack.append(orig_rgb)
                 bin_stack.append(bin_rgb)
     
-            orig_path = os.path.join(output_dir, f"cell{cell_idx}_centroids.tif")
-            bin_path = os.path.join(output_dir, f"cell{cell_idx}_binary_centroids.tif")
+            orig_path = os.path.join(output_dir, f"cell{cell_id}_centroids.tif")
+            bin_path = os.path.join(output_dir, f"cell{cell_id}_binary_centroids.tif")
     
             tifffile.imwrite(orig_path, np.array(orig_stack), photometric='rgb')
             tifffile.imwrite(bin_path, np.array(bin_stack), photometric='rgb')
-            print(f"✅ Saved Cell {cell_idx} to:\n- {orig_path}\n- {bin_path}")
+            print(f"✅ Saved Cell {cell_id} to:\n- {orig_path}\n- {bin_path}")
+
 
 
     
