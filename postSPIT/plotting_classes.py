@@ -2,9 +2,11 @@ from picasso.io import TiffMultiMap, load_movie
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.path import Path
 from scipy.stats import ttest_ind
 from tqdm import tqdm
 import os
+from natsort import natsorted
 from glob import glob
 import yaml
 from spit import tools
@@ -40,7 +42,7 @@ class Plotter:
         self.ylabel = ylabel
         self.fig, self.ax = plt.subplots(figsize=figsize)
     def set_labels(self):
-        # self.ax.set_title(self.title)
+        self.ax.set_title(self.title)
         self.ax.set_xlabel(self.xlabel)
         self.ax.set_ylabel(self.ylabel)     
     def set_ylim(self, s, e = None):
@@ -123,12 +125,12 @@ class BoxPlotter(Plotter):
                 self.ax.text((x1 + x2) * 0.5, y + y_offset, f"p = {p_val:.3e}", ha='center', va='bottom')
 
 class HistogramPlotter(Plotter):
-    def __init__(self, xlabel="X-axis", ylabel="Y-axis", figsize=(6.4, 4.8)):
+    def __init__(self,title="Histogram", xlabel="X-axis", ylabel="Y-axis", figsize=(6.4, 4.8)):
         super().__init__(xlabel=xlabel, ylabel=ylabel, figsize=figsize)
         self.colors = plt.rcParams['axes.prop_cycle'].by_key()['color']  # default matplotlib colors
         self.color_index = 0
 
-    def add_data(self, data, bins=10, label="Histogram", alpha=0.5):
+    def add_data(self, data, bins=50, label="Histogram", alpha=0.5):
         color = self.colors[self.color_index % len(self.colors)]
         self.color_index += 1
         self.ax.hist(data, bins=bins, label=label, color=color, alpha=alpha)
@@ -156,12 +158,12 @@ class TrackPlotter(Plotter):
         self.fig.savefig(filename,dpi = dpi, bbox_inches='tight', pad_inches=0)
 
 class Tracked_image:
-    def __init__(self, ch0, tracks0, stats0, ch1=None, tracks1=None, stats1=None, coloc_tracks=None, coloc_stats=None, px2nm=108, folder = None):
+    def __init__(self, ch0, tracks0, stats0, ch1=None, tracks1=None, stats1=None, coloc_tracks=None, coloc_stats=None, nm2px=108, folder = None):
         #checking data types
         assert isinstance(ch0, TiffMultiMap), "'ch0' must be a picasso.io.TiffMultiMap object"
         assert isinstance(tracks0, pd.DataFrame), "'tracks0' must be a pd.DataFrame object"
         assert isinstance(stats0, pd.DataFrame), "'stats0' must be a pd.DataFrame object"
-        assert isinstance(px2nm, (int, float))
+        assert isinstance(nm2px, (int, float))
         # Optional checks
         if ch1 is not None:
             assert isinstance(ch1, TiffMultiMap), "'ch1' must be a picasso.io.TiffMultiMap object"
@@ -182,8 +184,13 @@ class Tracked_image:
         self.stats1 = stats1
         self.coloc_tracks = coloc_tracks
         self.coloc_stats = coloc_stats
-        self.px2nm = px2nm
+        self.nm2px = nm2px
         self.folder = folder
+        self.result_cluster_analysis = {'ch0' : None, 'ch1' : None}
+        self.summary_cluster_analysis = {'ch0' : None, 'ch1' : None}
+        self.linked_clusters = {'ch0' : None, 'ch1' : None}
+        self.linked_clusters_stats = {'ch0' : None, 'ch1' : None}
+        self.tracks_outside_clusters = {'ch0' : None, 'ch1' : None}
     def plot_tracks(self, to_check, channel='ch0'):
         if channel == 'ch0':
             image = self.ch0
@@ -199,7 +206,7 @@ class Tracked_image:
         else:
             raise ValueError("channel must be 'ch0' or 'ch1'")
     
-        plotter = TrackPlotter(image, self.px2nm)
+        plotter = TrackPlotter(image, self.nm2px)
         print('Tracks inside ROIs:', stats[stats['track.id'].isin(to_check)]['cell_id'].unique())
         
         contour = None
@@ -218,7 +225,7 @@ class Tracked_image:
         assert self.coloc_tracks is not None, "coloc_tracks is not provided."
         assert self.coloc_stats is not None, "coloc_stats is not provided."
     
-        plotter = TrackPlotter(self.ch0, self.px2nm)
+        plotter = TrackPlotter(self.ch0, self.nm2px)
         print('Tracks inside ROIs:', self.coloc_stats[self.coloc_stats['colocID'].isin(to_check)]['cell_id'].unique())
         
         contour = None
@@ -251,9 +258,9 @@ class Tracked_image:
 
         for index, row in track.iterrows():
             if not np.isnan(row.y_0):
-                track.at[index, 'im_int_0'] = np.mean(self.ch0[row.t, int(row.y_0/self.px2nm)-1:int(row.y_0/self.px2nm)+1, int(row.x_0/self.px2nm)-1:int(row.x_0/self.px2nm)+1]) / np.median(self.ch0[row.t])
+                track.at[index, 'im_int_0'] = np.mean(self.ch0[row.t, int(row.y_0/self.nm2px)-1:int(row.y_0/self.nm2px)+1, int(row.x_0/self.nm2px)-1:int(row.x_0/self.nm2px)+1]) / np.median(self.ch0[row.t])
             if not np.isnan(row.y_1):
-                track.at[index, 'im_int_1'] = np.mean(self.ch1[row.t, int(row.y_1/self.px2nm)-1:int(row.y_1/self.px2nm)+1, int(row.x_1/self.px2nm)-1:int(row.x_1/self.px2nm)+1]) / np.median(self.ch1[row.t])
+                track.at[index, 'im_int_1'] = np.mean(self.ch1[row.t, int(row.y_1/self.nm2px)-1:int(row.y_1/self.nm2px)+1, int(row.x_1/self.nm2px)-1:int(row.x_1/self.nm2px)+1]) / np.median(self.ch1[row.t])
 
         plotter.add_data(track.t * 2, track.im_int_0.rolling(window=1).mean(), label=legend_0, color='blue')
         plotter.add_data(track.t * 2, track.im_int_1.rolling(window=1).mean(), label=legend_1, color='red')
@@ -285,23 +292,23 @@ class Tracked_image:
         ds = stats[stats['length'] >= min_len][columns_to_extract]
         ds = ds.dropna(subset=['D_msd'])
         return ds
-    def extract_dwell(self, min_len=10, max_dist = 250, ref='ch0'):
+    def extract_dwell(self, frame_rate = 1, min_len=10, max_dist = 250, ref='ch0'):
         stats = self.coloc_stats
         tracks = self.coloc_tracks
         if all(isinstance(obj, pd.DataFrame) for obj in [stats, tracks]):
             unique_colocIDs = stats[(stats['num_frames_coloc'] >min_len)]['colocID'].unique()
             data = []
             for i in unique_colocIDs:#[7:8]:
-                colocalized_df = tracks[(tracks['colocID'] == i) & (tracks['distance'] <= 300) & pd.notna(tracks['x']) & pd.notna(tracks['y'])]
+                colocalized_df = tracks[(tracks['colocID'] == i) & (tracks['distance'] <= max_dist) & pd.notna(tracks['x']) & pd.notna(tracks['y'])]
                 if not colocalized_df.empty:
-                    start_time = colocalized_df['t'].min()*2
+                    start_time = colocalized_df['t'].min()*frame_rate
                 locs_ch0 = tracks[tracks.colocID == i][['x_0', 'y_0', 't', 'intensity_0']]
                 locs_ch0 = locs_ch0.dropna(axis = 0)
                 locs_ch1 = tracks[tracks.colocID == i][['x_1', 'y_1', 't', 'intensity_1']]
                 locs_ch1 = locs_ch1.dropna(axis = 0)
                 times_0 = {'ch0': locs_ch0.t, 'ch1': locs_ch1.t}.get(ref)
-                if min(times_0) * 2 < start_time:
-                    dt = start_time - min(times_0) * 2
+                if min(times_0) * frame_rate < start_time:
+                    dt = start_time - min(times_0) * frame_rate
                     # Create a Series with the same columns
                     other_ref = 'ch1' if ref == 'ch0' else 'ch0'
                     track_ids = {'ch0': stats[stats.colocID == i]['track.id0'].values[0], 'ch1': stats[stats.colocID == i]['track.id1'].values[0]}
@@ -311,13 +318,28 @@ class Tracked_image:
                                           dt])
                     
             dwell_times = pd.DataFrame(data, columns=['colocID', 'track.id_ref', 'track.id_binds', 'cell_id', 'dwell_time'])
+            
             return dwell_times
         else:
             return None
     def split_cells(self):
         #obtain unique contours
-        unique_contours = self.stats0.loc[self.stats0['contour'].apply(lambda x: str(x)).drop_duplicates().index, 'contour']
-        unique_centroids = self.stats0.loc[self.stats0['centroid'].apply(lambda x: str(x)).drop_duplicates().index, 'centroid']
+        roi_contours = []
+        roi_centroids = []
+        if self.folder:
+            rois = natsorted(glob(os.path.join(self.folder+"/*.roi")))  
+            for roi in rois:
+                    roi_contour = tools.get_roi_contour(roi)
+                    roi_centroid = tools.get_roi_centroid(roi_contour)
+                    roi_contours.append(roi_contour)
+                    roi_centroids.append(roi_centroid)
+            unique_contours = pd.Series(roi_contours)
+            unique_centroids = pd.Series(roi_centroids)
+        else:
+            unique_contours = self.stats0.loc[self.stats0['contour'].apply(lambda x: str(x)).drop_duplicates().index, 'contour']
+            unique_centroids = self.stats0.loc[self.stats0['centroid'].apply(lambda x: str(x)).drop_duplicates().index, 'centroid']
+
+        
         #initilize variable to save output
         self.sep_cells = []
         self.contours = []
@@ -339,7 +361,7 @@ class Tracked_image:
             corr_cen[:, 1] -= y0
             self.contours.append(corr)
             self.centroids.append(corr_cen)
-    def analyze_clusters_protein(self, min_size = 10,ch='ch0', th_method = 'li', save_videos = False):
+    def analyze_clusters_protein(self, min_size = 80,ch='ch0', th_method = 'li_local', global_th_mode = 'max', window_size = 15, p = 2, q= 6, filter_spots = True, save_videos = False):
         """
         Analyze protein clusters per cell by thresholding and tracking features across frames.
     
@@ -371,22 +393,22 @@ class Tracked_image:
                 to_work = self.sep_cells[i][0]
             elif ch == 'ch1':
                 to_work = self.sep_cells[i][1]
-            to_work = median_filter(to_work, size=(3, 1, 1))
-
-            mask = self._create_mask(to_work[0].shape, self.contours[i])
-            if th_method == 'li':
-                thresh = threshold_li(to_work)
-            elif th_method == 'otsu':
-                thresh = threshold_otsu(to_work)
+            # to_work = median_filter(to_work, size=(3, 1, 1))
+            
+            if  'li' in th_method:
+                global_mask = self._li_threshold(to_work, self.contours[i], mode=global_th_mode)
+            elif 'otsu' in th_method:
+                global_mask = self._otsu_threshold(to_work, self.contours[i], mode=global_th_mode)
             else:
                 raise ValueError(f'{th_method} is not a valid thresholding method')
-            binary_stack = np.array([
-                remove_small_objects(binary_closing((frame > thresh) & mask), min_size=min_size)
-                for frame in to_work])
-            binary_stack_smoothed = median_filter(binary_stack.astype(np.uint8), size=(3, 1, 1))
-            combined_stack = binary_stack | binary_stack_smoothed
-            clusters_binary.append(combined_stack)
-
+            
+            if 'local' in th_method: 
+                local_mask = self._phansalkar_threshold(to_work, radius=window_size, p = p, q = q)
+                binary_stack = self._remove_small_objects_per_frame(binary_opening((binary_closing(local_mask & global_mask))), min_size = min_size)
+            else:
+                binary_stack = global_mask
+            clusters_binary.append(binary_stack)
+            mask = self._create_mask(to_work[0].shape, self.contours[i])
             if i not in self.cluster_contours:
                 self.cluster_contours[i] = {}
 
@@ -439,30 +461,17 @@ class Tracked_image:
                     extent = region.area / ((bbox_height) * (bbox_width)) if bbox_height > 0 and bbox_width > 0 else np.nan
                     eccentricity = region.eccentricity if hasattr(region, 'eccentricity') else np.nan
 
-                    # LBP histogram
-                    # Each lbp_i value represents the proportion of pixels in the cluster that exhibit a specific type of local texture:
-                    #High lbp_0: Very smooth, flat regions.
-                    # High lbp_1–lbp_8: Structured textures like edges or corners.
-                    # High lbp_9: Irregular or noisy textures.
-                    # So, for example:
-                    
-                    # A mature synapse might show high values in lbp_0 and lbp_1–lbp_4 (smooth and organized).
-                    # An immature synapse might have higher lbp_9 (more chaotic texture).
-                    # lbp = local_binary_pattern(to_work * region_mask_bool, P=8, R=1, method='uniform')
-                    # lbp_hist, _ = np.histogram(lbp[region_mask_bool], bins=np.arange(0, 11), density=True)
-                    # lbp_features = {f'lbp_{i}': lbp_hist[i] for i in range(len(lbp_hist))}
-                    
                     props = {
                         'cell_id': i,
                         'frame': frame_num,
-                        'area': area * self.px2nm * self.px2nm,
+                        'area': area * self.nm2px * self.nm2px,
                         'sum_int': sum_int,
                         'norm_sum_int': sum_int / median_int_out,
                         'med_int': median_int,
                         'norm_med_int': median_int / median_int_out,
-                        'dist_cent': np.linalg.norm(np.array([centroid_row, centroid_col]) - self.centroids[i][0]) * self.px2nm,
+                        'dist_cent': np.linalg.norm(np.array([centroid_row, centroid_col]) - self.centroids[i][0]) * self.nm2px,
                         'solidity': solidity,
-                        'perimeter': perimeter * self.px2nm,
+                        'perimeter': perimeter * self.nm2px,
                         'circularity': circularity,
                         'centroid_row': centroid_row,
                         'centroid_col': centroid_col,
@@ -496,37 +505,180 @@ class Tracked_image:
             
         linked_df = pd.concat(linked_all, ignore_index=True)
         linked_stats = self._summarize_per_track(linked_df)
+        self.result_cluster_analysis[ch] = result
+        self.summary_cluster_analysis[ch] = results_stats
+        self.linked_clusters[ch] = linked_df
+        self.linked_clusters_stats[ch] = linked_stats
+        spots = None
+        if filter_spots:
+            spots = self.combine_clusters_and_spots(channel = ch)
         if save_videos:
-            self._save_centroid_videos_per_cell(clusters_binary, result, self.sep_cells, ch=ch, square_size=3)
-
+            self._save_centroid_videos_per_cell(clusters_binary, result, self.sep_cells, ch=ch, square_size=1, filtered_spots = spots)
+        
         return clusters_binary, result, results_stats, linked_df, linked_stats
-    def _summarize_clusters_per_cell_frame(self, result_df):
-        summary = (
-            result_df
-            .groupby(['cell_id', 'frame'])
-            .agg({
-                'label': 'count',
-                'area': ['mean', self._safe_std],
-                'sum_int': ['mean', self._safe_std],
-                'norm_sum_int': ['mean', self._safe_std],
-                'med_int': ['mean', self._safe_std],
-                'norm_med_int': ['mean', self._safe_std],
-                'dist_cent': ['mean', self._safe_std],
-                'solidity': ['mean', self._safe_std],
-                'perimeter': ['mean', self._safe_std],
-                'circularity': ['mean', self._safe_std],
-                'aspect_ratio': ['mean', self._safe_std],
-                'eccentricity': ['mean', self._safe_std],
-                'extent': ['mean', self._safe_std],
-                # **{f'lbp_{i}': ['mean', self._safe_std] for i in range(10)}
-                # **{f'haralick_{i}': ['mean', safe_std] for i in range(13)}
-            })
-        )
-        summary.columns = [('_'.join(col).replace('__safe_std', '_std')) for col in summary.columns]
-        summary = summary.rename(columns={'label_count': 'num_clusters'})
-        summary = summary.reset_index()
-        return summary
+    def combine_clusters_and_spots(self, channel = 'ch0'):
+        #TODO: fix issue with ROIs: if one ROI does not have tracks, the rois are not properly assigned. --> probably fix in SPIT.link by making the cell_id columns have the correct roi number. 
+        clusters = self.result_cluster_analysis[channel].copy()
+        if channel == 'ch0':
+            spots = self.tracks0.copy()
+        elif channel == 'ch1':
+            spots = self.tracks1.copy()
+        else:
+            print(f'Channel {channel} is not valid. Use ch0 or ch1.')
+            return 
+        cells = list(spots.loc[spots['cell_id'].apply(lambda x: str(x)).drop_duplicates().index, 'cell_id'])
+        unique_contour = self.stats0.loc[self.stats0['contour'].apply(lambda x: str(x)).drop_duplicates().index, 'contour']
+        corrections = {}
+        for cell, contour in zip(cells, unique_contour):
+            x0 = int(min(contour[:, 0]))
+            y0 = int(min(contour[:, 1]))
+            corrections[cell] = (x0, y0)
+        spots[['x_per_cell', 'y_per_cell']] = spots.apply(
+            lambda row: pd.Series([
+                row['x']/self.nm2px - corrections[row['cell_id']][0],  
+                row['y']/self.nm2px - corrections[row['cell_id']][1]   ]),
+            axis=1
+            )
+        # clusters['contour_shifted'] = clusters.apply(
+        #         lambda row: row['contour'] + np.array([corrections[row['cell_id']][1], corrections[row['cell_id']][0]]),  # row, col
+        #         axis=1
+        #                 )
+        filtered_spots = self._filter_spots_outside_clusters(spots, clusters)
+        
+        
+        self.tracks_outside_clusters[channel] = filtered_spots
+        return filtered_spots
+    def _filter_spots_outside_clusters(self, spots_df, clusters_df):
+        # Create a mask to keep track of which spots to keep
+        keep_mask = []
+        
+        for idx, spot in spots_df.iterrows():
+            frame = spot['t']
+            # print(int(frame))
+            x, y = spot['x_per_cell'], spot['y_per_cell']
+            # Get all contours for this frame
+            contours = clusters_df[clusters_df['frame'] == int(frame)]['contour']
+            
+            # Check if the point is inside any contour
+            inside_any = False
+            for contour in contours:
+                if contour.size == 0:
+                    continue
+                result = cv2.pointPolygonTest(contour, (x, y), False)
+                if result >= 0:  # >0 inside, =0 on edge, <0 outside
+                    inside_any = True
+                    break
 
+            # Keep the spot only if it's not inside any contour
+            keep_mask.append(not inside_any)
+
+        # Filter the spots
+        filtered_spots = spots_df[keep_mask].reset_index(drop=True)
+        return filtered_spots
+    def _li_threshold(self, image, mask, mode = "max"):
+        if mode == 'max':
+            thresh = threshold_li(np.max(image, axis = 0))
+        elif mode == 'full':
+            thresh = threshold_li(np.array(image))
+        elif mode == 'median':
+            thresh = threshold_li(np.median(image, axis = 0))
+        elif mode == 'last':
+            thresh = threshold_li(image[-1])
+        else:
+            print("mode is not valid")
+            return None
+        global_mask = binary_closing((image > thresh) & self._create_mask(image[0].shape, mask))
+        return global_mask
+    def _otsu_threshold(self, original, image, mask, mode = "max"):
+        if mode == 'max':
+            thresh = threshold_otsu(np.max(original, axis = 0))
+        elif mode == 'full':
+            thresh = threshold_otsu(np.array(original))
+        elif mode == 'median':
+            thresh = threshold_otsu(np.median(original, axis = 0))
+        elif mode == 'last':
+            thresh = threshold_otsu(original[-1])
+        else:
+            print("mode is not valid")
+            return None
+        global_mask = binary_closing((image > thresh) & self._create_mask(image[0].shape, mask))
+        return global_mask
+    def _phansalkar_threshold(self, image_stack, radius=15, k=0.25, p=2.0, q=10.0):
+        """
+        Phansalkar local thresholding.
+        Can process either a single 2D image or a 3D stack of images.
+        
+        Parameters:
+            image_stack: 2D or 3D numpy array (float32, normalized [0,1])
+            radius: int, local window radius
+            k, p, q: floats, Phansalkar parameters
+        Returns:
+            Binary thresholded image or stack of same shape (bool ndarray)
+        """
+        window_size = (radius * 2) + 1
+
+        def threshold_single(image):
+            image = image / np.max(image) if np.max(image) > 0 else image
+            mean = cv2.blur(image, (window_size, window_size))
+            mean_sq = cv2.blur(image**2, (window_size, window_size))
+            std = np.sqrt(mean_sq - mean**2)
+            threshold = mean * (1 + p * np.exp(-q * mean) + k * ((std / 0.5) - 1))
+            return image > threshold
+
+        if image_stack.ndim == 2:
+            return threshold_single(image_stack)
+        elif image_stack.ndim == 3:
+            # Process each frame independently and stack results
+            binary_stack = np.zeros_like(image_stack, dtype=bool)
+            for i in range(image_stack.shape[0]):
+                binary_stack[i] = threshold_single(image_stack[i])
+            return binary_stack
+        else:
+            raise ValueError("Input must be 2D or 3D numpy array")
+    def _remove_small_objects_per_frame(self, stack, min_size=100, connectivity=1):
+        cleaned_stack = np.zeros_like(stack, dtype=bool)
+        for i in range(stack.shape[0]):  # assuming frames on axis 0
+            cleaned_stack[i] = remove_small_objects(stack[i], min_size=min_size, connectivity=connectivity)
+        return cleaned_stack
+    def _summarize_clusters_per_cell_frame(self, result_df):
+        summary_rows = []
+
+        for (cell_id, frame), group in result_df.groupby(['cell_id', 'frame']):
+            weights = group['area'] * group['norm_med_int']
+            summary = {
+                'cell_id': cell_id,
+                'frame': frame,
+                'num_clusters': len(group),
+                'area_mean': self._weighted_mean(group['area'], weights),
+                'area_safe_std': self._safe_std(group['area']),
+                'sum_int_mean': self._weighted_mean(group['sum_int'], weights),
+                'sum_int_safe_std': self._safe_std(group['sum_int']),
+                'norm_sum_int_mean': self._weighted_mean(group['norm_sum_int'], weights),
+                'norm_sum_int_safe_std': self._safe_std(group['norm_sum_int']),
+                'med_int_mean': self._weighted_mean(group['med_int'], weights),
+                'med_int_safe_std': self._safe_std(group['med_int']),
+                'norm_med_int_mean': self._weighted_mean(group['norm_med_int'], weights),
+                'norm_med_int_safe_std': self._safe_std(group['norm_med_int']),
+                'dist_cent_mean': self._weighted_mean(group['dist_cent'], weights),
+                'dist_cent_safe_std': self._safe_std(group['dist_cent']),
+                'solidity_mean': self._weighted_mean(group['solidity'], weights),
+                'solidity_safe_std': self._safe_std(group['solidity']),
+                'perimeter_mean': self._weighted_mean(group['perimeter'], weights),
+                'perimeter_safe_std': self._safe_std(group['perimeter']),
+                'circularity_mean': self._weighted_mean(group['circularity'], weights),
+                'circularity_safe_std': self._safe_std(group['circularity']),
+                'aspect_ratio_mean': self._weighted_mean(group['aspect_ratio'], weights),
+                'aspect_ratio_safe_std': self._safe_std(group['aspect_ratio']),
+                'eccentricity_mean': self._weighted_mean(group['eccentricity'], weights),
+                'eccentricity_safe_std': self._safe_std(group['eccentricity']),
+                'extent_mean': self._weighted_mean(group['extent'], weights),
+                'extent_safe_std': self._safe_std(group['extent']),
+            }
+            summary_rows.append(summary)
+
+        return pd.DataFrame(summary_rows) 
+    def _weighted_mean(self, x, weights):
+        return np.average(x, weights=weights) if len(x) > 0 and np.sum(weights) > 0 else np.nan
     def _safe_std(self, x):
         return x.std() if len(x) > 1 else 0
     def _summarize_per_track(self, linked_df, min_frames=5):
@@ -539,8 +691,8 @@ class Tracked_image:
     
             frames = group['frame'].values
             # Convert coordinates to nanometers
-            x = group['x'].values * self.px2nm
-            y = group['y'].values * self.px2nm
+            x = group['x'].values * self.nm2px
+            y = group['y'].values * self.nm2px
             dists_to_center = group['dist_cent'].values  # already in nm if set that way
             
             # Compute frame-to-frame displacements and instantaneous speeds
@@ -602,50 +754,112 @@ class Tracked_image:
             })
         
         return pd.DataFrame(features)
-    def _save_centroid_videos_per_cell(self, clusters_binary, all_props, sep_cells, ch='ch0', square_size=3, output_dir='./'):
+    def _save_centroid_videos_per_cell(self, clusters_binary, all_props, sep_cells, ch='ch0', square_size=3, output_dir='./', filtered_spots=None):
         ch_idx = 0 if ch == 'ch0' else 1
-        if self.folder != None:
-            output_dir = self.folder+r'\cluster_analysis'
+        if self.folder is not None:
+            output_dir = os.path.join(self.folder, 'cluster_analysis')
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
+    
         for cell_idx, cell in enumerate(sep_cells):
             num_frames = cell[ch_idx].shape[0]
-
+    
             orig_stack = []
             bin_stack = []
-
-            # Filter dataframe for this cell
+    
             cell_props = all_props[all_props['cell_id'] == cell_idx]
-
+            if filtered_spots is not None:
+                cell_spots = filtered_spots[filtered_spots['cell_id'] == cell_idx]
+    
             for frame_num in range(num_frames):
                 orig_frame = cell[ch_idx][frame_num]
                 binary_frame = clusters_binary[cell_idx][frame_num]
-
-                # Normalize original image to 0–255
+    
                 norm = (orig_frame - orig_frame.min()) / (orig_frame.ptp() + 1e-9)
                 orig_rgb = (np.dstack([norm] * 3) * 255).astype(np.uint8)
-
                 bin_rgb = np.dstack([binary_frame.astype(np.uint8) * 255] * 3)
-
-                # Filter centroids for this frame
+    
+                binary_uint8 = (binary_frame * 255).astype(np.uint8)
+                contours, _ = cv2.findContours(binary_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(orig_rgb, contours, -1, (128, 0, 128), 1)
+    
                 frame_props = cell_props[cell_props['frame'] == frame_num]
-
                 for _, row in frame_props.iterrows():
                     r, c = int(round(row['centroid_row'])), int(round(row['centroid_col']))
                     self._paint_red_square(orig_rgb, (r, c), size=square_size)
                     self._paint_red_square(bin_rgb, (r, c), size=square_size)
-
+    
+                # 🟢 Draw filtered spots if provided
+                if filtered_spots is not None:
+                    frame_spots = cell_spots[cell_spots['t'] == frame_num]
+                    for _, spot in frame_spots.iterrows():
+                        r, c = int(round(spot['y_per_cell'])), int(round(spot['x_per_cell']))
+                        self._paint_red_square(orig_rgb, (r, c), size=square_size, color = [255, 255, 0])
+    
                 orig_stack.append(orig_rgb)
                 bin_stack.append(bin_rgb)
-
-            # Save TIFFs
-            orig_path = f"{output_dir}\cell{cell_idx}_centroids.tif"
-            bin_path = f"{output_dir}\cell{cell_idx}_binary_centroids.tif"
-
+    
+            orig_path = os.path.join(output_dir, f"cell{cell_idx}_centroids.tif")
+            bin_path = os.path.join(output_dir, f"cell{cell_idx}_binary_centroids.tif")
+    
             tifffile.imwrite(orig_path, np.array(orig_stack), photometric='rgb')
             tifffile.imwrite(bin_path, np.array(bin_stack), photometric='rgb')
             print(f"✅ Saved Cell {cell_idx} to:\n- {orig_path}\n- {bin_path}")
-    def _paint_red_square(self, image, center, size=3, color=None):
+
+
+    
+    # def _save_centroid_videos_per_cell(self, clusters_binary, all_props, sep_cells, ch='ch0', square_size=3, output_dir='./'):
+    #     ch_idx = 0 if ch == 'ch0' else 1
+    #     if self.folder is not None:
+    #         output_dir = os.path.join(self.folder, 'cluster_analysis')
+    #     if not os.path.exists(output_dir):
+    #         os.makedirs(output_dir)
+
+    #     for cell_idx, cell in enumerate(sep_cells):
+    #         num_frames = cell[ch_idx].shape[0]
+
+    #         orig_stack = []
+    #         bin_stack = []
+
+    #         # Filter dataframe for this cell
+    #         cell_props = all_props[all_props['cell_id'] == cell_idx]
+
+    #         for frame_num in range(num_frames):
+    #             orig_frame = cell[ch_idx][frame_num]
+    #             binary_frame = clusters_binary[cell_idx][frame_num]
+
+    #             # Normalize original image to 0–255
+    #             norm = (orig_frame - orig_frame.min()) / (orig_frame.ptp() + 1e-9)
+    #             orig_rgb = (np.dstack([norm] * 3) * 255).astype(np.uint8)
+    #             bin_rgb = np.dstack([binary_frame.astype(np.uint8) * 255] * 3)
+
+    #             # Draw contours using OpenCV
+    #             binary_uint8 = (binary_frame * 255).astype(np.uint8)
+    #             contours, _ = cv2.findContours(binary_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    #             cv2.drawContours(orig_rgb, contours, -1, (128, 0, 128), 1)  # Green on original
+    #             # cv2.drawContours(bin_rgb, contours, -1, (0, 255, 0), 1)   # Green on binary
+
+    #             # Filter centroids for this frame
+    #             frame_props = cell_props[cell_props['frame'] == frame_num]
+
+    #             for _, row in frame_props.iterrows():
+    #                 r, c = int(round(row['centroid_row'])), int(round(row['centroid_col']))
+    #                 self._paint_red_square(orig_rgb, (r, c), size=square_size)
+    #                 self._paint_red_square(bin_rgb, (r, c), size=square_size)
+
+    #             orig_stack.append(orig_rgb)
+    #             bin_stack.append(bin_rgb)
+
+    #         # Save TIFFs
+    #         orig_path = os.path.join(output_dir, f"cell{cell_idx}_centroids.tif")
+    #         bin_path = os.path.join(output_dir, f"cell{cell_idx}_binary_centroids.tif")
+
+    #         tifffile.imwrite(orig_path, np.array(orig_stack), photometric='rgb')
+    #         tifffile.imwrite(bin_path, np.array(bin_stack), photometric='rgb')
+    #         print(f"✅ Saved Cell {cell_idx} to:\n- {orig_path}\n- {bin_path}")
+   
+    def _paint_red_square(self, image, center, size=1, color=None):
         """Paint a red square centered at (row, col) in the RGB image."""
         if color is None:
             color = [255, 0, 0]  # red
@@ -1003,7 +1217,7 @@ class Dataset_tracked_folder:
     def get_Ds(self, min_len = 10, channel = 'ch0'):
         all_ds = []  # List to collect all DataFrames
         box = BoxPlotter(xlabel="Conditions", ylabel="Diff. Coeff. (um^2/sec)")
-        for i, cond in tqdm(zip(self._conditions_paths, self.conditions), desc='Extracting Ds...\n'):
+        for i, cond in tqdm(zip(self._conditions_paths, self.conditions_to_use), desc='Extracting Ds...\n'):
             print(f'\nAnalyzing {i}...')
             ds_cond = []
             pathshdf = glob(i + '/**/**.hdf', recursive=True)
@@ -1025,17 +1239,18 @@ class Dataset_tracked_folder:
         return final_ds, box
     def get_dwell(self, min_len = 10, ref = 'ch0', x0=0, xt=None, y0=0, yt=None):
         all_dwell = []
+        frame_rate = self._get_frame_rate()
         hist = HistogramPlotter( xlabel="dwell_time(sec)", ylabel="Frequency")
-        for i, cond in tqdm(zip(self._conditions_paths, self.conditions), desc='Extracting Ds...\n'):
+        for i, cond in tqdm(zip(self._conditions_paths, self.conditions_to_use), desc='Extracting Ds...\n'):
             print(f'\nAnalyzing {i}...')
             dwell_cond = []
             pathshdf = glob(i + '/**/**colocsTracks_stats.hdf', recursive=True)
             paths_locs = list(set(os.path.dirname(file) for file in pathshdf))
-            for j in paths_locs[0:1]:
+            for j in tqdm(paths_locs):
                 pathsyaml = glob(j + '/**/**colocsTracks.yaml', recursive=True)
                 yaml = self._openyaml(pathsyaml)
                 image = Single_tracked_folder(j).open_files()
-                dwell = image.extract_dwell(min_len = min_len, max_dist = yaml['th'], ref = ref)
+                dwell = image.extract_dwell(frame_rate = frame_rate, min_len = min_len, max_dist = yaml['th'], ref = ref)
                 if isinstance(dwell, pd.DataFrame):
                 # # Add columns at the beginning
                     dwell.insert(0, 'condition', cond)
@@ -1065,6 +1280,20 @@ class Dataset_tracked_folder:
             return 90.16
         elif result_txt['Computer'] == 'K2-BIVOUAC':
             return 108
+    def _get_frame_rate(self): #if self.transform = True, this will get the correct naclib coefficients (Annapurna VS K2)
+        resultPath  = glob(self.folder + '/**/**result.txt', recursive=True)[0]
+        result_txt  = tools.read_result_file(resultPath) #this opens the results.txt file to check the microscope used. 
+                #It should be in a folder called paramfile inside the folder where the script is located. 
+        time_unit = result_txt['Interval']
+        time = time_unit.split(' ')[0]
+        unit = time_unit.split(' ')[1]
+        if unit == 'sec':
+            return float(time)
+        elif unit == 'ms':
+            return int(time)/1000
+        elif unit == 'min':
+            return int(time)*1000
+           
     def _count_run_folders_recursive(self, root_folder):
         pattern = re.compile(r'^Run\d+$')
         count = 0
