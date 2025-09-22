@@ -1,37 +1,46 @@
-from picasso.io import TiffMultiMap, load_movie
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.path import Path
-from scipy.stats import ttest_ind
-from tqdm import tqdm
-import os
-from natsort import natsorted
-from glob import glob
-import yaml
-from spit import tools
-import re
-from skimage.draw import polygon
-from skimage.measure import label, regionprops
-from skimage.morphology import binary_opening, binary_closing, disk, remove_small_objects, remove_small_holes
 import cv2
-from skimage.filters import (
-    threshold_otsu,
-    threshold_yen,
-    threshold_triangle,
-    threshold_li,
-    threshold_mean,
-    threshold_minimum,
-    threshold_isodata, 
-    threshold_local
-)
-import tifffile
-import trackpy as tp
+import joblib
+import json
 import logging
+import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+import pandas as pd
+import re
+import tifffile
+import yaml
 from collections import defaultdict
+from glob import glob
+from natsort import natsorted
+from picasso.io import TiffMultiMap, load_movie
 from scipy.ndimage import median_filter
-from scipy.stats import linregress
+from scipy.optimize import curve_fit
+from scipy.stats import linregress, ttest_ind
+from sklearn.metrics import r2_score
+from skimage.draw import polygon
 from skimage.feature import local_binary_pattern
+from skimage.filters import (
+    threshold_li,
+    threshold_otsu,
+)
+from skimage.measure import label, regionprops
+from skimage.morphology import (
+    binary_closing,
+    binary_opening,
+    disk,
+    remove_small_holes,
+    remove_small_objects
+)
+from spit import tools
+from spit import colocalize as coloc
+from spit import linking as link
+from tqdm import tqdm
+import trackpy as tp
+import pandas.errors
+from matplotlib.patches import Patch
+import warnings
+from pandas.errors import PerformanceWarning
 logging.getLogger('trackpy').setLevel(logging.ERROR)
 
 
@@ -90,6 +99,72 @@ class ScatterPlotter(Plotter):
     def add_data(self, x, y, label="Scatter", color="green"):
         self.ax.scatter(x, y, label=label, color=color)
 
+class HueBoxPlotter:
+    def __init__(self, title="Box Plot", xlabel="X-axis", ylabel="Y-axis", palette=None):
+        self.title = title
+        self.xlabel = xlabel
+        self.ylabel = ylabel
+        self.palette = palette if palette else {}
+        self.data = {}  # Nested dictionary: {group: {hue: data}}
+        self.hues = set()
+        self.groups = []
+        self.fig, self.ax = plt.subplots(figsize=(8, 6))
+
+    def add_box(self, group, hue, data):
+        if group not in self.data:
+            self.data[group] = {}
+            self.groups.append(group)
+        self.data[group][hue] = data
+        self.hues.add(hue)
+
+    def plot(self):
+        positions = []
+        box_data = []
+        box_colors = []
+        tick_labels = []
+
+        hue_list = sorted(self.hues)
+        group_spacing = 1.0
+        box_width = 0.6
+        hue_spacing = box_width / len(hue_list)
+
+        for i, group in enumerate(self.groups):
+            base_pos = i * (group_spacing + box_width)
+            for j, hue in enumerate(hue_list):
+                if hue in self.data[group]:
+                    pos = base_pos + j * hue_spacing
+                    positions.append(pos)
+                    box_data.append(self.data[group][hue])
+                    color = self.palette.get(hue, f"C{j}")
+                    box_colors.append(color)
+            tick_labels.append(group)
+
+        # Plot boxplots
+        bp = self.ax.boxplot(box_data, positions=positions, widths=hue_spacing * 0.8,medianprops={'color': 'black'}, patch_artist=True, showfliers=False)
+
+        # Color boxes
+        for patch, color in zip(bp['boxes'], box_colors):
+            patch.set_facecolor(color)
+
+        # Add jittered dots
+        for pos, data, color in zip(positions, box_data, box_colors):
+            x = np.random.normal(pos, hue_spacing * 0.2, size=len(data))
+            self.ax.plot(x, data, marker='o', linestyle='None', markersize=1, alpha=0.5, color=color)
+
+
+        # Set labels and legend
+        self.ax.set_title(self.title)
+        self.ax.set_xlabel(self.xlabel)
+        self.ax.set_ylabel(self.ylabel)
+        self.ax.set_xticks([i * (group_spacing + box_width) + box_width / 2 for i in range(len(self.groups))])
+        self.ax.set_xticklabels(tick_labels, rotation=45)
+
+        handles = [plt.Line2D([0], [0], color=self.palette.get(hue, f"C{i}"), lw=4) for i, hue in enumerate(hue_list)]
+        self.ax.legend(handles, hue_list, title="Condition", loc='best')
+
+        plt.tight_layout()
+        plt.show()
+
 class BoxPlotter(Plotter):
     def __init__(self, title="Box Plot", xlabel="X-axis", ylabel="Y-axis"):
         super().__init__(title, xlabel, ylabel)
@@ -125,15 +200,15 @@ class BoxPlotter(Plotter):
                 self.ax.text((x1 + x2) * 0.5, y + y_offset, f"p = {p_val:.3e}", ha='center', va='bottom')
 
 class HistogramPlotter(Plotter):
-    def __init__(self,title="Histogram", xlabel="X-axis", ylabel="Y-axis", figsize=(6.4, 4.8)):
+    def __init__(self, density = False, title="Histogram", xlabel="X-axis", ylabel="Y-axis", figsize=(6.4, 4.8)):
         super().__init__(xlabel=xlabel, ylabel=ylabel, figsize=figsize)
         self.colors = plt.rcParams['axes.prop_cycle'].by_key()['color']  # default matplotlib colors
         self.color_index = 0
-
+        self.density = density
     def add_data(self, data, bins=50, label="Histogram", alpha=0.5):
         color = self.colors[self.color_index % len(self.colors)]
         self.color_index += 1
-        self.ax.hist(data, bins=bins, label=label, color=color, alpha=alpha)
+        self.ax.hist(data, density = self.density,  bins=bins, label=label, color=color, alpha=alpha)
 
 class TrackPlotter(Plotter):
     def __init__(self, image, px2nm=108, title="Track Plot", xlabel="X (nm)", ylabel="Y (nm)", figsize = (6.4, 6.4)):
@@ -322,114 +397,207 @@ class Tracked_image:
             return dwell_times
         else:
             return None
+  
+class Cell_Analyzer:
+    def __init__(self, folder, ch0_wl=None, ch1_wl=None):
+        self.folder = folder 
+        self.nm2px = self._get_nm2px()
+
+        # load images into dict by wavelength
+        paths = glob(self.folder + '/**/*nm.tif', recursive=True)
+        self.images = {}
+        for image in paths:
+            match = re.search(r'(\d{3}nm)', image)
+            if match: 
+                wl = match.group(1)   # e.g. '405nm'
+                self.images[wl] = load_movie(image)[0]
+
+        self.channels = list(self.images.keys())
+
+        # store wavelength choices
+        self.ch0_wl = ch0_wl
+        self.ch1_wl = ch1_wl
+
+        # validate wavelength choices
+        if (ch0_wl and ch0_wl not in self.images) or (ch1_wl and ch1_wl not in self.images):
+            raise ValueError(f"Requested wavelengths not found. Available: {self.channels}. Requested: {ch0_wl}, {ch1_wl}")
+        # separate the cells:
+        try:
+            self.split_cells()
+        except: 
+            print('No ROI available')
+        # placeholders for downstream analyses
+        self.clusters_binary = {wl: None for wl in self.channels}
+        self.result_cluster_analysis = {wl: None for wl in self.channels}
+        self.summary_cluster_analysis = {wl: None for wl in self.channels}
+        self.linked_clusters = {wl: None for wl in self.channels}
+        self.linked_clusters_stats = {wl: None for wl in self.channels}
+        self.maturation = {wl: None for wl in self.channels}
+        
+        # # placeholders for downstream analyses
+        # self.result_cluster_analysis = {wl: None for wl in ['ch0','ch1']}
+        # self.summary_cluster_analysis = {wl: None for wl in ['ch0','ch1']}
+        # self.linked_clusters = {wl: None for wl in ['ch0','ch1']}
+        # self.linked_clusters_stats = {wl: None for wl in ['ch0','ch1']}
+        # self.maturation = {wl: None for wl in ['ch0','ch1']}
+        self._auto_load()
+    # --- properties (dynamic views into self.images) ---
+    @property
+    def ch0(self):
+        return self.images.get(self.ch0_wl)
+    @property
+    def ch1(self):
+        return self.images.get(self.ch1_wl)
+    
+    def _auto_load(self):
+        """
+        Check if cluster/tracking/maturation results exist on disk and load them.
+        """
+        cluster_dir = os.path.join(self.folder, "cluster_analysis")
+        maturation_dir = os.path.join(self.folder, "maturation_analysis")
+        
+        for ch in self.channels:            
+            # --- Cluster results ---
+            clusters_npy   = os.path.join(cluster_dir, f"clusters_binary_{ch}.npy")
+            clusters_csv   = os.path.join(cluster_dir, f"clusters_{ch}.hdf")
+            clusters_stats = os.path.join(cluster_dir, f"clusters_stats_{ch}.csv")
+            tracks_csv     = os.path.join(cluster_dir, f"clusters_tracks_{ch}.hdf")
+            tracks_stats   = os.path.join(cluster_dir, f"clusters_tracks_stats_{ch}.csv")
+            if os.path.exists(clusters_npy): 
+                self.clusters_binary[ch] = np.load(clusters_npy, allow_pickle=True).item()
+            if os.path.exists(clusters_csv):
+                self.result_cluster_analysis[ch] = pd.read_hdf(clusters_csv)
+            if os.path.exists(clusters_stats):
+                self.summary_cluster_analysis[ch] = pd.read_csv(clusters_stats)
+            if os.path.exists(tracks_csv):
+                self.linked_clusters[ch] = pd.read_hdf(tracks_csv)
+            
+            if os.path.exists(tracks_stats):
+                try:
+                    self.linked_clusters_stats[ch] = pd.read_csv(tracks_stats)
+                except pandas.errors.EmptyDataError:
+                    print(f"Warning: {tracks_stats} is empty or malformed.")
+
+            
+            # --- Maturation results ---
+            maturation_json = os.path.join(maturation_dir, f"maturation__{ch}.json")
+            if os.path.exists(maturation_json):
+                with open(maturation_json, "r") as f:
+                    self.maturation[ch] = pd.DataFrame(json.load(f))
+
+    def _get_nm2px(self):
+        resultPath  = glob(self.folder + '/**/*result.txt', recursive=True)[0]
+        result_txt  = tools.read_result_file(resultPath)
+        if result_txt['Computer'] == 'ANNAPURNA': 
+            return 90.16
+        elif result_txt['Computer'] == 'K2-BIVOUAC':
+            return 108
+        else:
+            raise ValueError(f"Unknown microscope source: {result_txt['Computer']}")
     def split_cells(self):
-        #obtain unique contours
         roi_contours = {}
         roi_centroids = {}
-        if self.folder:
-            rois = natsorted(glob(os.path.join(self.folder+"/*.roi"))) 
-            for roi in rois:
-                    cell_id = int(re.search(r'roi(\d+)\.roi$', roi).group(1))
-                    roi_contour = tools.get_roi_contour(roi)
-                    roi_centroid = tools.get_roi_centroid(roi_contour)
-                    roi_contours[cell_id] = roi_contour
-                    roi_centroids[cell_id] = roi_centroid
-            unique_contours = pd.Series(roi_contours)
-            unique_centroids = pd.Series(roi_centroids)
-        else:
-            unique_contours = self.stats0.loc[self.stats0['contour'].apply(lambda x: str(x)).drop_duplicates().index, 'contour']
-            unique_centroids = self.stats0.loc[self.stats0['centroid'].apply(lambda x: str(x)).drop_duplicates().index, 'centroid']
+        rois = natsorted(glob(os.path.join(self.folder, "*.roi")))
+        if not rois:
+            raise RuntimeError(f"No ROI files found in folder: {self.folder}")
 
-        
-        #initilize variable to save output
-        self.sep_cells = {}
-        self.contours = {}
-        self.centroids = {}
-        #for each contour
-        
+        for roi in rois:
+            cell_id = int(re.search(r'roi(\d+)\.roi$', roi).group(1))
+            roi_contour = tools.get_roi_contour(roi)
+            roi_centroid = tools.get_roi_centroid(roi_contour)
+            roi_contours[cell_id] = roi_contour
+            roi_centroids[cell_id] = roi_centroid
+
+        unique_contours = pd.Series(roi_contours)
+        unique_centroids = pd.Series(roi_centroids)
+
+        self.sep_cells, self.contours, self.centroids = {}, {}, {}
         for cell_id in unique_contours.index:
             i = unique_contours[cell_id]
             j = unique_centroids[cell_id]
-
-            #extract the bounding box (the min and max in each direction)
             x0, x1 = int(min(i[:, 0])), int(max(i[:, 0]))
             y0, y1 = int(min(i[:, 1])), int(max(i[:, 1]))
-            #append a list containing each of the bounding-bix cropped images 
-            # print(x0, x1, y0, y1)
-            self.sep_cells[cell_id] = [self.ch0[:, y0:y1, x0:x1], self.ch1[:, y0:y1, x0:x1]]
-            #correct the contour by substracting x0 and y0, then append it into the list
-            corr = i.copy()
-            corr[:, 0] -= x0
-            corr[:, 1] -= y0
-            corr_cen = j.copy()
-            corr_cen[:, 0] -= x0
-            corr_cen[:, 1] -= y0
+
+            # crop available channels
+            self.sep_cells[cell_id] = {wl: im[:, y0:y1, x0:x1] for wl, im in self.images.items()}
+
+
+            corr = i.copy(); corr[:, 0] -= x0; corr[:, 1] -= y0
+            corr_cen = j.copy(); corr_cen[:, 0] -= x0; corr_cen[:, 1] -= y0
             self.contours[cell_id] = corr
             self.centroids[cell_id] = corr_cen
-    def analyze_clusters_protein(self, min_size = 80,ch='ch0', th_method = 'li_local', global_th_mode = 'max', window_size = 15, p = 2, q= 6, filter_spots = True, save_videos = False):
+    def analyze_clusters_protein(self, min_size=80, ch='ch0', th_method='li_local', global_th_mode='max',
+                             window_size=15, p=2, q=6, save_videos=False, overwrite = False):
         """
         Analyze protein clusters per cell by thresholding and tracking features across frames.
     
-        Parameters:
-        -----------
-        min_size : int
-            Minimum size of detected cluster regions.
-        ch : str
-            Channel to analyze: 'ch0' or 'ch1'.
-        save_videos : bool
-            Whether to generate debug videos per cell.
-    
         Returns:
-        --------
-        clusters_binary : dict of 3D np.array
-            Binary masks of detected clusters.
-        result : pd.DataFrame
-            Region properties per frame.
-        linked_df : pd.DataFrame
-            Tracked cluster features across frames.
+            clusters_binary : dict of 3D np.array
+            result : pd.DataFrame
+            linked_df : pd.DataFrame
         """
-        self.split_cells()
         clusters_binary = {}
         all_props = []
         self.cluster_contours = {}  # Store contours by cell/frame/label
-
-        for i in self.sep_cells.keys():
-            if ch == 'ch0':
-                to_work = self.sep_cells[i][0]
-            elif ch == 'ch1':
-                to_work = self.sep_cells[i][1]
-            # to_work = median_filter(to_work, size=(3, 1, 1))
-            
-            if  'li' in th_method:
-                global_mask = self._li_threshold(to_work, self.contours[i], mode=global_th_mode)
+    
+        # map channel string to actual wavelength key
+        if ch == 'ch0':
+            wl = self.ch0_wl
+        elif ch == 'ch1':
+            wl = self.ch1_wl
+        elif ch in self.images:
+            wl = ch  # ch is already a valid wavelength key
+        else:
+            raise ValueError(f"Invalid channel {ch}. Must be 'ch0', 'ch1', or one of {list(self.images.keys())}")
+        if (self.result_cluster_analysis[wl] is not None and
+            self.summary_cluster_analysis[wl] is not None and
+            self.linked_clusters[wl] is not None and
+            self.linked_clusters_stats[wl] is not None and
+            not overwrite):
+            print(f"Skipping {wl}: analysis results already loaded in memory.")
+            return (None, 
+                    self.result_cluster_analysis[wl],
+                    self.summary_cluster_analysis[wl],
+                    self.linked_clusters[wl],
+                    self.linked_clusters_stats[wl])
+    
+        for cell_id in self.sep_cells.keys():
+            to_work = self.sep_cells[cell_id][wl]
+    
+            if 'li' in th_method:
+                global_mask = self._li_threshold(to_work, self.contours[cell_id], mode=global_th_mode)
             elif 'otsu' in th_method:
-                global_mask = self._otsu_threshold(to_work, self.contours[i], mode=global_th_mode)
+                global_mask = self._otsu_threshold(to_work, self.contours[cell_id], mode=global_th_mode)
             else:
                 raise ValueError(f'{th_method} is not a valid thresholding method')
-            
-            if 'local' in th_method: 
-                local_mask = self._phansalkar_threshold(to_work, radius=window_size, p = p, q = q)
-                binary_stack = self._remove_small_objects_per_frame(binary_opening((binary_closing(local_mask & global_mask))), min_size = min_size)
+    
+            if 'local' in th_method:
+                local_mask = self._phansalkar_threshold(to_work, radius=window_size, p=p, q=q)
+                binary_stack = self._remove_small_objects_per_frame(
+                    binary_opening(binary_closing(local_mask & global_mask)), min_size=min_size
+                )
             else:
                 binary_stack = global_mask
-            clusters_binary[i]= binary_stack
-            mask = self._create_mask(to_work[0].shape, self.contours[i])
-            if i not in self.cluster_contours:
-                self.cluster_contours[i] = {}
-
+    
+            clusters_binary[cell_id] = binary_stack
+            mask = self._create_mask(to_work[0].shape, self.contours[cell_id])
+    
+            if cell_id not in self.cluster_contours:
+                self.cluster_contours[cell_id] = {}
+    
             for frame_num, binary_frame in enumerate(binary_stack):
-                if frame_num not in self.cluster_contours[i]:
-                    self.cluster_contours[i][frame_num] = {}
-
+                if frame_num not in self.cluster_contours[cell_id]:
+                    self.cluster_contours[cell_id][frame_num] = {}
+    
                 labeled = label(binary_frame)
-
+    
                 for region in regionprops(labeled, intensity_image=to_work[frame_num]):
                     if region.area <= min_size:
                         continue
-
+    
                     region_mask = (labeled == region.label).astype(np.uint8)
                     contours, _ = cv2.findContours(region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
+    
                     if len(contours) == 0:
                         contour_list = np.array([]).reshape(0, 2)
                         perimeter = np.nan
@@ -442,39 +610,38 @@ class Tracked_image:
                         area = cv2.contourArea(cnt)
                         hull_area = cv2.contourArea(cv2.convexHull(cnt))
                         solidity = area / hull_area if hull_area > 0 else np.nan
-
+    
                     circularity = (4 * np.pi * area / (perimeter ** 2)) if perimeter and perimeter > 1e-6 else np.nan
-
+    
                     M = cv2.moments(region_mask)
                     if M['m00'] != 0:
                         centroid_row = M['m01'] / M['m00']
                         centroid_col = M['m10'] / M['m00']
                     else:
                         centroid_row, centroid_col = region.centroid
-
+    
                     bbox = region.bbox
                     region_mask_bool = (labeled == region.label)
                     median_int_out = np.median(to_work[frame_num][~mask])
                     median_int = np.median(to_work[frame_num][region_mask_bool])
                     sum_int = np.sum(to_work[frame_num][region_mask_bool])
-                    
-                    # Additional shape features
+    
                     minr, minc, maxr, maxc = bbox
                     bbox_height = maxr - minr
                     bbox_width = maxc - minc
                     aspect_ratio = region.major_axis_length / region.minor_axis_length if region.minor_axis_length > 0 else np.nan
-                    extent = region.area / ((bbox_height) * (bbox_width)) if bbox_height > 0 and bbox_width > 0 else np.nan
+                    extent = region.area / (bbox_height * bbox_width) if bbox_height > 0 and bbox_width > 0 else np.nan
                     eccentricity = region.eccentricity if hasattr(region, 'eccentricity') else np.nan
-
+    
                     props = {
-                        'cell_id': i,
+                        'cell_id': cell_id,
                         'frame': frame_num,
-                        'area': area * self.nm2px * self.nm2px,
+                        'area': area * self.nm2px ** 2,
                         'sum_int': sum_int,
                         'norm_sum_int': sum_int / median_int_out,
                         'med_int': median_int,
                         'norm_med_int': median_int / median_int_out,
-                        'dist_cent': np.linalg.norm(np.array([centroid_row, centroid_col]) - self.centroids[i][0]) * self.nm2px,
+                        'dist_cent': np.linalg.norm(np.array([centroid_row, centroid_col]) - self.centroids[cell_id][0]) * self.nm2px,
                         'solidity': solidity,
                         'perimeter': perimeter * self.nm2px,
                         'circularity': circularity,
@@ -484,102 +651,314 @@ class Tracked_image:
                         'bbox_min_col': bbox[1],
                         'bbox_max_row': bbox[2],
                         'bbox_max_col': bbox[3],
-                        'contour': contour_list, 
+                        'contour': contour_list,
                         'label': region.label,
                         'aspect_ratio': aspect_ratio,
                         'extent': extent,
                         'eccentricity': eccentricity
                     }
-                    # props.update(lbp_features)
                     all_props.append(props)
-
-                    # Store contour by label for this frame & cell
-                    self.cluster_contours[i][frame_num][region.label] = contour_list
-
+                    self.cluster_contours[cell_id][frame_num][region.label] = contour_list
+    
         result = pd.DataFrame(all_props)
-        results_stats = self._summarize_clusters_per_cell_frame(result)
-        df_tp = result.rename(columns={"centroid_col": "x", "centroid_row": "y", "norm_sum_int": "mass", "area": "size"})
-        df_tp['label'] = result['label']
-
-        linked_all = []
-        for cell_id, df_cell in df_tp.groupby('cell_id'):
-            linked = tp.link_df(df_cell, search_range=25, memory=0, adaptive_step=0.95,
-            adaptive_stop = 2, link_strategy='hybrid')
-            linked['cell_id'] = cell_id
-            linked_all.append(linked)
-            
-        linked_df = pd.concat(linked_all, ignore_index=True)
-        linked_stats = self._summarize_per_track(linked_df)
-        self.result_cluster_analysis[ch] = result
-        self.summary_cluster_analysis[ch] = results_stats
-        self.linked_clusters[ch] = linked_df
-        self.linked_clusters_stats[ch] = linked_stats
-        spots = None
-        if filter_spots:
-            spots = self.remove_spots_within_clusters(channel = ch)
-        if save_videos:
-            self._save_centroid_videos_per_cell(clusters_binary, result, self.sep_cells, ch=ch, square_size=1, filtered_spots = spots)
-        
-        return clusters_binary, result, results_stats, linked_df, linked_stats
-    def remove_spots_within_clusters(self, channel = 'ch0'):
-        #TODO: fix issue with ROIs: if one ROI does not have tracks, the rois are not properly assigned. --> probably fix in SPIT.link by making the cell_id columns have the correct roi number. 
-        clusters = self.result_cluster_analysis[channel].copy()
-        if channel == 'ch0':
-            spots = self.tracks0.copy()
-        elif channel == 'ch1':
-            spots = self.tracks1.copy()
+        if result.empty: 
+            results_stats = pd.DataFrame()
+            linked_df = pd.DataFrame()
+            linked_stats = pd.DataFrame()
         else:
-            print(f'Channel {channel} is not valid. Use ch0 or ch1.')
-            return 
-        cells = list(spots.loc[spots['cell_id'].apply(lambda x: str(x)).drop_duplicates().index, 'cell_id'])
-        unique_contour = self.stats0.loc[self.stats0['contour'].apply(lambda x: str(x)).drop_duplicates().index, 'contour']
-        corrections = {}
-        for cell, contour in zip(cells, unique_contour):
-            x0 = int(min(contour[:, 0]))
-            y0 = int(min(contour[:, 1]))
-            corrections[cell] = (x0, y0)
-        spots[['x_per_cell', 'y_per_cell']] = spots.apply(
-            lambda row: pd.Series([
-                row['x']/self.nm2px - corrections[row['cell_id']][0],  
-                row['y']/self.nm2px - corrections[row['cell_id']][1]   ]),
-            axis=1
-            )
-        # clusters['contour_shifted'] = clusters.apply(
-        #         lambda row: row['contour'] + np.array([corrections[row['cell_id']][1], corrections[row['cell_id']][0]]),  # row, col
-        #         axis=1
-        #                 )
-        filtered_spots = self._filter_spots_outside_clusters(spots, clusters)
+            results_stats = self._summarize_clusters_per_cell_frame(result)
+            df_tp = result.rename(columns={"centroid_col": "x", "centroid_row": "y", "norm_sum_int": "mass", "area": "size"})
+            df_tp['label'] = result['label']
+    
+            linked_all = []
+            for cell_id, df_cell in df_tp.groupby('cell_id'):
+                linked = tp.link_df(df_cell, search_range=25, memory=0, adaptive_step=0.95,
+                                    adaptive_stop=2, link_strategy='hybrid')
+                linked['cell_id'] = cell_id
+                linked_all.append(linked)
+    
+            linked_df = pd.concat(linked_all, ignore_index=True)
+            linked_stats = self._summarize_per_track(linked_df)
+        self.result_cluster_analysis[wl] = result
+        self.summary_cluster_analysis[wl] = results_stats
+        self.linked_clusters[wl] = linked_df
+        self.linked_clusters_stats[wl] = linked_stats
+        
+        if save_videos:
+            self._save_centroid_videos_per_cell(clusters_binary, result, self.sep_cells, ch=ch, square_size=2)
+        if self.folder is not None:
+            output_dir = os.path.join(self.folder, 'cluster_analysis')
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
         
         
-        self.tracks_outside_clusters[channel] = filtered_spots
-        return filtered_spots
-    def _filter_spots_outside_clusters(self, spots_df, clusters_df):
-        # Create a mask to keep track of which spots to keep
-        keep_mask = []
-        
-        for idx, spot in spots_df.iterrows():
-            frame = spot['t']
-            # print(int(frame))
-            x, y = spot['x_per_cell'], spot['y_per_cell']
-            # Get all contours for this frame
-            contours = clusters_df[clusters_df['frame'] == int(frame)]['contour']
+        np.save(os.path.join(output_dir, f'clusters_binary_{wl}'), clusters_binary, allow_pickle=True)
+        if not result.empty:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", PerformanceWarning)
+                result.to_hdf(os.path.join(output_dir, f'clusters_{wl}.hdf'), key='df')   
+        if not results_stats.empty:
+            results_stats.to_csv(os.path.join(output_dir, f'clusters_stats_{wl}.csv'), index = False) 
+        if not linked_df.empty:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", PerformanceWarning)
+                linked_df.to_hdf(os.path.join(output_dir, f'clusters_tracks_{wl}.hdf'), key = 'df')   
+        if not linked_stats.empty:
+            linked_stats.to_csv(os.path.join(output_dir, f'clusters_tracks_stats_{wl}.csv'), index = False) 
+        return clusters_binary, result, results_stats, linked_df, linked_stats
+    def predict_maturation(self, model, preprocess_frame_func = None, save_plot = False, 
+                           N_rolling = 5, ch = 'ch0', r2_thresh = 0.75, low_thresh=0.4, high_thresh=0.6, overwrite = False):
+        # map channel string to actual wavelength key
+        if ch == 'ch0':
+            wl = self.ch0_wl
+        elif ch == 'ch1':
+            wl = self.ch1_wl
+        elif ch in self.images:
+            wl = ch  # ch is already a valid wavelength key
+        else:
+            raise ValueError(f"Invalid channel {ch}. Must be 'ch0', 'ch1', or one of {list(self.images.keys())}")
+        if self.maturation[wl] is not None and not overwrite:
+            print(f"Skipping {wl}: maturation results already loaded in memory.")
+            return self.maturation[wl]
+        results_list = []
+        for cell_id in tqdm(self.sep_cells.keys()):
+            video = self.sep_cells[cell_id][wl]
+            if preprocess_frame_func is not None:
+                video_processed = np.array([preprocess_frame_func(f)[0] for f in video])
+            else:
+                video_processed = np.array([self._preprocess_frame(f)[0] for f in video])
+            predictions = model.predict(video_processed, verbose=0)  # single progress bar
+            predictions = predictions[:, 0]  # flatten
+            x_data = np.array(range(video.shape[0]))
+            fit_success = True
+            try:
+                popt, pcov = curve_fit(self._sigmoid, x_data, predictions, p0=[1, 0, 1, 0], maxfev=10000)
+                y_fit = self._sigmoid(x_data, *popt)
+            except RuntimeError:
+                print(f"Fit failed for: {self.folder}, cell: {cell_id}")
+                fit_success = False
+                y_fit = None  # or skip plotting
+            category, features = self._classify_maturation(predictions, fit = y_fit, 
+                                                    fit_success = fit_success, r2_thresh = r2_thresh, smooth_window=N_rolling, 
+                                                                            low_thresh=low_thresh, high_thresh=high_thresh) 
+            r2 = features['r2']
+            # Create figure
+            fig = plt.figure(figsize=(20, 10))  # slightly shorter height
+            gs = gridspec.GridSpec(2, 1, height_ratios=[2, 0.5], hspace=0.02)  # smaller bottom row
             
-            # Check if the point is inside any contour
-            inside_any = False
-            for contour in contours:
-                if contour.size == 0:
-                    continue
-                result = cv2.pointPolygonTest(contour, (x, y), False)
-                if result >= 0:  # >0 inside, =0 on edge, <0 outside
-                    inside_any = True
-                    break
+            # Figure title
+            if 'output' in self.folder:
+                title = self.folder.split(r'output')[-1]
+            else:
+                title = self.folder
+            fig.suptitle(f"{title}, cell: {cell_id}", fontsize=16, y=0.95)
+            x_cross = None
+            # --- Main probability curve ---
+            ax_curve = fig.add_subplot(gs[0])
+            if fit_success: 
+                L, x0, k, b = popt
+                ax_curve.plot(x_data, y_fit, 
+                label=f'Sigmoid Fit (R²={r2:.2f})\nL={L:.2f}, x0={x0:.2f}, k={k:.2f}, b={b:.2f}', color="#DD8452")
 
-            # Keep the spot only if it's not inside any contour
-            keep_mask.append(not inside_any)
+                crossing_indices = np.where(y_fit > 0.5)[0]
+                if len(crossing_indices) > 0:
+                        x_cross = x_data[crossing_indices[0]]
+                        ax_curve.axvline(x=x_cross, color="#55A868", linestyle='--', label=f'Crosses 0.5 at x={x_cross:.0f}')
 
-        # Filter the spots
-        filtered_spots = spots_df[keep_mask].reset_index(drop=True)
-        return filtered_spots
+            crossing_frame = int(x_cross) if x_cross is not None else None
+            selected_indices = self._select_frames(len(video), crossing_frame)
+
+            rolling_avg = np.convolve(predictions, np.ones(N_rolling)/N_rolling, mode='valid')
+            ax_curve.plot(range(N_rolling-1, len(predictions)), rolling_avg,
+                          label=f'Rolling Avg (N={N_rolling})', color="#4C72B0", linewidth=2)
+            
+            exclude_keys = {"r2"}
+            features_str = ", ".join([f"{k}: {v:.2f}" for k, v in features.items() if k not in exclude_keys])
+            
+            ax_curve.set_ylabel("Probability", fontsize=12)
+            ax_curve.set_xlabel("Frame", fontsize=12)
+            ax_curve.set_ylim(0, 1)
+            ax_curve.set_title(f"DL - {category} - {features_str}", fontsize=14)
+            ax_curve.legend()
+            
+            # --- Row of images ---
+            # n_images = len(selected_indices)
+            bottom = 0.05  # bottom of image row
+            height = 0.15
+            for i, idx in enumerate(selected_indices):
+                ax_img = fig.add_axes([0.05 + i*0.18, bottom, 0.16, height])
+                ax_img.imshow(video[idx], cmap='gray')
+                ax_img.set_title(f"Frame {idx}", fontsize=10)
+                ax_img.axis('off')
+                
+                
+            # Create save folder
+            save_folder = os.path.join(self.folder, 'maturation_analysis')
+            os.makedirs(save_folder, exist_ok=True)
+            
+            # Prepare data
+            sig_params = dict(zip(["L", "x0", "k", "b"], [float(v) for v in popt])) if fit_success else None
+            
+            cell_result = {
+                "run": self.folder,
+                "cell": int(cell_id),
+                "n_frames": int(len(video)),
+                "probabilities": [float(p) for p in predictions],
+                "sigmoid_params": sig_params,
+                "sigmoid_r2": float(r2) if r2 is not None else None,
+                "features": {k: float(v) if isinstance(v, (np.floating, np.integer)) else v for k, v in features.items()},
+                "category": category,
+                "crossing_frame": int(crossing_frame) if crossing_frame is not None else None,
+            }
+            
+            # Flatten for DataFrame
+            flat_result = {
+                "run": cell_result["run"],
+                "cell": cell_result["cell"],
+                "n_frames": cell_result["n_frames"],
+                "category": cell_result["category"],
+                "crossing_frame": cell_result["crossing_frame"],
+                **cell_result["features"],
+                **(cell_result["sigmoid_params"] or {}), 
+                "sigmoid_r2": cell_result["sigmoid_r2"], 
+                "probabilities": cell_result["probabilities"]
+            }
+
+            results_list.append(flat_result)
+
+            
+            # Define base name
+            base_name = f"maturation_roi{cell_id}"
+            
+            # Save plot
+            if save_plot:
+                plot_path = os.path.join(save_folder, f"{base_name}_{wl}_plot.png")
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            
+            plt.show()
+        results_df = pd.DataFrame(results_list)
+        json_path = os.path.join(save_folder, f"maturation__{wl}.json")
+        with open(json_path, "w") as f:
+            json.dump(results_list, f, indent=2)  # indent=2 for readability
+        CSV = results_df.drop(columns=["probabilities"])        
+        CSV.to_csv(os.path.join(save_folder, f"maturation_{wl}.csv"), index = False)
+        self.maturation[wl] = results_df
+        return results_df
+    def _sigmoid(self, x, L, x0, k, b):
+        z = np.clip(-k * (x - x0), -500, 500)  # prevent overflow
+        return L / (1 + np.exp(z)) + b
+    def _preprocess_frame(self, frame, target_size=(224, 224)):
+        # frame: 2D grayscale
+        frame = frame.astype(np.float32) / 4095.0   # normalize like during training
+        frame = np.expand_dims(frame, axis=-1)      # HxWx1
+        frame_rgb = np.repeat(frame, 3, axis=-1)    # HxWx3
+        frame_rgb = cv2.resize(frame_rgb, target_size)  # resize to model input
+        frame_rgb = np.expand_dims(frame_rgb, axis=0)   # add batch dimension
+        return frame_rgb
+    def _classify_maturation(self, prob, fit = None, fit_success = False, r2_thresh = 0.75, smooth_window=5, 
+                            low_thresh=0.4, high_thresh=0.6):
+        """
+        Classifies a cell maturation probability curve into 4 categories:
+        1. Never matures
+        2. Matures over time
+        3. Starts mature
+        4. Not classifiable
+        
+        Parameters
+        ----------
+        probabilities : np.ndarray
+            1D array of probabilities per frame (0-1 range).
+        smooth_window : int
+            Rolling average window size. Turns to 1 if fit is used instead of raw probabilities
+        low_thresh, high_thresh : float
+            Probability thresholds for classification.
+
+        Returns
+        -------
+        category : int
+            Classification label: 0: never matures, 1: matures over time, 2: starts mature, 3: not classifiable.
+        features : dict
+            Key metrics extracted from the curve.
+        """
+        r2 = None
+        features = {}
+        if fit_success:
+            if fit is not None:
+                r2 = r2_score(prob, fit)
+                residuals = prob - fit
+                if r2 > r2_thresh:
+                    probabilities = fit
+                    smooth_window = 1
+                    features["std_residuals"] = np.std(residuals)
+                else:
+                    features["std_curve"] = np.std(prob)
+                    probabilities = prob
+            else:
+                print('fit is None, using raw probabilities')
+                features["std_curve"] = np.std(prob)
+                probabilities = prob
+        else:
+            print('fit failed, using raw probabilities')
+            features["std_curve"] = np.std(prob)
+            probabilities = prob
+
+        features['r2'] = r2
+        # Smooth
+        if smooth_window > 1:
+            kernel = np.ones(smooth_window) / smooth_window
+            prob_smooth = np.convolve(probabilities, kernel, mode='same')
+        else:
+            prob_smooth = probabilities.copy()
+
+        # Features
+        N_edge = max(3, smooth_window)  # use first/last few points
+        p_start = np.mean(prob_smooth[:N_edge])
+        p_end   = np.mean(prob_smooth[-N_edge:])
+        p_max   = np.max(prob_smooth)
+        p_min   = np.min(prob_smooth)
+        delta   = p_end - p_start
+
+        # Count threshold crossings at 0.5
+        crossings = np.where(np.diff((prob_smooth > 0.5).astype(int)) != 0)[0]
+        n_crossings = len(crossings)
+
+        # Classification rules
+        if p_max < low_thresh:
+            category = 0
+        elif p_start < low_thresh and p_end > high_thresh and delta > 0.4:
+            category = 1
+        elif p_start > high_thresh and p_min > low_thresh:
+            category = 2
+        else:
+            category = 3
+
+        features.update({
+        "p_start": p_start,
+        "p_end": p_end,
+        "p_max": p_max,
+        "p_min": p_min,
+        "delta": delta,
+        "n_crossings": n_crossings
+    })
+
+        return category, features
+    def _select_frames(self, n_frames, crossing_frame=None, min_gap=15):
+        if n_frames < 5:
+            # Not enough frames, just return all
+            return list(range(n_frames))
+
+        first, last = 0, n_frames - 1
+
+        if crossing_frame is not None and min_gap <= crossing_frame <= n_frames - 1 - min_gap:
+            mid = crossing_frame
+            # 2 is midway between 1 and 3
+            second = (first + mid) // 2
+            # 4 is midway between 3 and 5
+            fourth = (mid + last) // 2
+            return [first, second, mid, fourth, last]
+        else:
+            # No valid crossing, just pick 5 equally spaced
+            return [0, n_frames//4, n_frames//2, 3*n_frames//4, n_frames-1]
     def _li_threshold(self, image, mask, mode = "max"):
         if mode == 'max':
             thresh = threshold_li(np.max(image, axis = 0))
@@ -592,7 +971,7 @@ class Tracked_image:
         else:
             print("mode is not valid")
             return None
-        global_mask = binary_closing((image > thresh) & self._create_mask(image[0].shape, mask))
+        global_mask = binary_closing((image > thresh)) #& self._create_mask(image[0].shape, mask))
         return global_mask
     def _otsu_threshold(self, original, image, mask, mode = "max"):
         if mode == 'max':
@@ -606,7 +985,7 @@ class Tracked_image:
         else:
             print("mode is not valid")
             return None
-        global_mask = binary_closing((image > thresh) & self._create_mask(image[0].shape, mask))
+        global_mask = binary_closing((image > thresh))# & self._create_mask(image[0].shape, mask))
         return global_mask
     def _phansalkar_threshold(self, image_stack, radius=15, k=0.25, p=2.0, q=10.0):
         """
@@ -644,6 +1023,11 @@ class Tracked_image:
         cleaned_stack = np.zeros_like(stack, dtype=bool)
         for i in range(stack.shape[0]):  # assuming frames on axis 0
             cleaned_stack[i] = remove_small_objects(stack[i], min_size=min_size, connectivity=connectivity)
+        return cleaned_stack
+    def _remove_small_holes_per_frame(self, stack, min_size=100, connectivity=1):
+        cleaned_stack = np.zeros_like(stack, dtype=bool)
+        for i in range(stack.shape[0]):  # assuming frames on axis 0
+            cleaned_stack[i] = remove_small_holes(stack[i], area_threshold=min_size, connectivity=connectivity)
         return cleaned_stack
     def _summarize_clusters_per_cell_frame(self, result_df):
         summary_rows = []
@@ -686,6 +1070,87 @@ class Tracked_image:
         return np.average(x, weights=weights) if len(x) > 0 and np.sum(weights) > 0 else np.nan
     def _safe_std(self, x):
         return x.std() if len(x) > 1 else 0
+    def _save_centroid_videos_per_cell(self, clusters_binary, all_props, sep_cells, ch='ch0', square_size=3, output_dir='cluster_analysis', filtered_spots=None):
+        # map 'ch0'/'ch1' to actual wavelength, else assume ch is a valid wavelength key
+        if ch == 'ch0':
+            wl = self.ch0_wl
+        elif ch == 'ch1':
+            wl = self.ch1_wl
+        elif ch in self.images:
+            wl = ch
+        else:
+            raise ValueError(f"Invalid channel {ch}. Must be 'ch0', 'ch1', or one of {list(self.images.keys())}")
+    
+        if self.folder is not None and not os.path.isabs(output_dir):
+            output_dir = os.path.join(self.folder, output_dir)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+    
+        for cell_id, cell in sep_cells.items():
+            if wl not in cell:
+                print(f"Warning: Cell {cell_id} does not have channel {wl}, skipping")
+                continue
+    
+            num_frames = cell[wl].shape[0]
+    
+            orig_stack = []
+            bin_stack = []
+    
+            cell_props = all_props[all_props['cell_id'] == cell_id]
+            if filtered_spots is not None:
+                cell_spots = filtered_spots[filtered_spots['cell_id'] == cell_id]
+    
+            for frame_num in range(num_frames):
+                orig_frame = cell[wl][frame_num]  # use actual wavelength key
+                binary_frame = clusters_binary[cell_id][frame_num]
+    
+                norm = (orig_frame - orig_frame.min()) / (orig_frame.ptp() + 1e-9)
+                orig_rgb = (np.dstack([norm] * 3) * 255).astype(np.uint8)
+                bin_rgb = np.dstack([binary_frame.astype(np.uint8) * 255] * 3)
+    
+                binary_uint8 = (binary_frame * 255).astype(np.uint8)
+                contours, _ = cv2.findContours(binary_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(orig_rgb, contours, -1, (128, 0, 128), 1)
+    
+                frame_props = cell_props[cell_props['frame'] == frame_num]
+                for _, row in frame_props.iterrows():
+                    r, c = int(round(row['centroid_row'])), int(round(row['centroid_col']))
+                    self._paint_red_square(orig_rgb, (r, c), size=square_size)
+                    self._paint_red_square(bin_rgb, (r, c), size=square_size)
+    
+                if filtered_spots is not None:
+                    frame_spots = cell_spots[cell_spots['t'] == frame_num]
+                    for _, spot in frame_spots.iterrows():
+                        r, c = int(round(spot['y_per_cell'])), int(round(spot['x_per_cell']))
+                        self._paint_red_square(orig_rgb, (r, c), size=square_size, color=[255, 255, 0])
+                        self._paint_red_square(bin_rgb, (r, c), size=square_size, color=[255, 255, 0])
+    
+                orig_stack.append(orig_rgb)
+                bin_stack.append(bin_rgb)
+    
+            orig_path = os.path.join(output_dir, f"{wl}_cell{cell_id}_centroids.tif")
+            bin_path = os.path.join(output_dir, f"{wl}_cell{cell_id}_binary_centroids.tif")
+    
+            tifffile.imwrite(orig_path, np.array(orig_stack), photometric='rgb')
+            tifffile.imwrite(bin_path, np.array(bin_stack), photometric='rgb')
+            # print(f"Saved Cell {cell_id} to:\n- {orig_path}\n- {bin_path}")
+    def _paint_red_square(self, image, center, size=1, color=None):
+        """Paint a red square centered at (row, col) in the RGB image."""
+        if color is None:
+            color = [255, 0, 0]  # red
+
+        r, c = center
+        half = size // 2
+        r_start = max(r - half, 0)
+        r_end = min(r + half + 1, image.shape[0])
+        c_start = max(c - half, 0)
+        c_end = min(c + half + 1, image.shape[1])
+        image[r_start:r_end, c_start:c_end] = color        
+    def _create_mask(self, image_shape, contour):
+        mask = np.zeros(image_shape, dtype=bool)
+        rr, cc = polygon(contour[:, 1], contour[:, 0], image_shape)
+        mask[rr, cc] = True
+        return mask
     def _summarize_per_track(self, linked_df, min_frames=5):
         features = []
         
@@ -759,129 +1224,6 @@ class Tracked_image:
             })
         
         return pd.DataFrame(features)
-    def _save_centroid_videos_per_cell(self, clusters_binary, all_props, sep_cells, ch='ch0', square_size=3, output_dir='./', filtered_spots=None):
-        ch_idx = 0 if ch == 'ch0' else 1
-        if self.folder is not None:
-            output_dir = os.path.join(self.folder, 'cluster_analysis')
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-    
-        for cell_id, cell in sep_cells.items():
-            num_frames = cell[ch_idx].shape[0]
-    
-            orig_stack = []
-            bin_stack = []
-    
-            cell_props = all_props[all_props['cell_id'] == cell_id]
-            if filtered_spots is not None:
-                cell_spots = filtered_spots[filtered_spots['cell_id'] == cell_id]
-    
-            for frame_num in range(num_frames):
-                orig_frame = cell[ch_idx][frame_num]
-                binary_frame = clusters_binary[cell_id][frame_num]
-    
-                norm = (orig_frame - orig_frame.min()) / (orig_frame.ptp() + 1e-9)
-                orig_rgb = (np.dstack([norm] * 3) * 255).astype(np.uint8)
-                bin_rgb = np.dstack([binary_frame.astype(np.uint8) * 255] * 3)
-    
-                binary_uint8 = (binary_frame * 255).astype(np.uint8)
-                contours, _ = cv2.findContours(binary_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                cv2.drawContours(orig_rgb, contours, -1, (128, 0, 128), 1)
-    
-                frame_props = cell_props[cell_props['frame'] == frame_num]
-                for _, row in frame_props.iterrows():
-                    r, c = int(round(row['centroid_row'])), int(round(row['centroid_col']))
-                    self._paint_red_square(orig_rgb, (r, c), size=square_size)
-                    self._paint_red_square(bin_rgb, (r, c), size=square_size)
-    
-                if filtered_spots is not None:
-                    frame_spots = cell_spots[cell_spots['t'] == frame_num]
-                    for _, spot in frame_spots.iterrows():
-                        r, c = int(round(spot['y_per_cell'])), int(round(spot['x_per_cell']))
-                        self._paint_red_square(orig_rgb, (r, c), size=square_size, color=[255, 255, 0])
-                        self._paint_red_square(bin_rgb, (r, c), size=square_size, color=[255, 255, 0])
-    
-                orig_stack.append(orig_rgb)
-                bin_stack.append(bin_rgb)
-    
-            orig_path = os.path.join(output_dir, f"cell{cell_id}_centroids.tif")
-            bin_path = os.path.join(output_dir, f"cell{cell_id}_binary_centroids.tif")
-    
-            tifffile.imwrite(orig_path, np.array(orig_stack), photometric='rgb')
-            tifffile.imwrite(bin_path, np.array(bin_stack), photometric='rgb')
-            print(f"✅ Saved Cell {cell_id} to:\n- {orig_path}\n- {bin_path}")
-
-
-
-    
-    # def _save_centroid_videos_per_cell(self, clusters_binary, all_props, sep_cells, ch='ch0', square_size=3, output_dir='./'):
-    #     ch_idx = 0 if ch == 'ch0' else 1
-    #     if self.folder is not None:
-    #         output_dir = os.path.join(self.folder, 'cluster_analysis')
-    #     if not os.path.exists(output_dir):
-    #         os.makedirs(output_dir)
-
-    #     for cell_idx, cell in enumerate(sep_cells):
-    #         num_frames = cell[ch_idx].shape[0]
-
-    #         orig_stack = []
-    #         bin_stack = []
-
-    #         # Filter dataframe for this cell
-    #         cell_props = all_props[all_props['cell_id'] == cell_idx]
-
-    #         for frame_num in range(num_frames):
-    #             orig_frame = cell[ch_idx][frame_num]
-    #             binary_frame = clusters_binary[cell_idx][frame_num]
-
-    #             # Normalize original image to 0–255
-    #             norm = (orig_frame - orig_frame.min()) / (orig_frame.ptp() + 1e-9)
-    #             orig_rgb = (np.dstack([norm] * 3) * 255).astype(np.uint8)
-    #             bin_rgb = np.dstack([binary_frame.astype(np.uint8) * 255] * 3)
-
-    #             # Draw contours using OpenCV
-    #             binary_uint8 = (binary_frame * 255).astype(np.uint8)
-    #             contours, _ = cv2.findContours(binary_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    #             cv2.drawContours(orig_rgb, contours, -1, (128, 0, 128), 1)  # Green on original
-    #             # cv2.drawContours(bin_rgb, contours, -1, (0, 255, 0), 1)   # Green on binary
-
-    #             # Filter centroids for this frame
-    #             frame_props = cell_props[cell_props['frame'] == frame_num]
-
-    #             for _, row in frame_props.iterrows():
-    #                 r, c = int(round(row['centroid_row'])), int(round(row['centroid_col']))
-    #                 self._paint_red_square(orig_rgb, (r, c), size=square_size)
-    #                 self._paint_red_square(bin_rgb, (r, c), size=square_size)
-
-    #             orig_stack.append(orig_rgb)
-    #             bin_stack.append(bin_rgb)
-
-    #         # Save TIFFs
-    #         orig_path = os.path.join(output_dir, f"cell{cell_idx}_centroids.tif")
-    #         bin_path = os.path.join(output_dir, f"cell{cell_idx}_binary_centroids.tif")
-
-    #         tifffile.imwrite(orig_path, np.array(orig_stack), photometric='rgb')
-    #         tifffile.imwrite(bin_path, np.array(bin_stack), photometric='rgb')
-    #         print(f"✅ Saved Cell {cell_idx} to:\n- {orig_path}\n- {bin_path}")
-   
-    def _paint_red_square(self, image, center, size=1, color=None):
-        """Paint a red square centered at (row, col) in the RGB image."""
-        if color is None:
-            color = [255, 0, 0]  # red
-
-        r, c = center
-        half = size // 2
-        r_start = max(r - half, 0)
-        r_end = min(r + half + 1, image.shape[0])
-        c_start = max(c - half, 0)
-        c_end = min(c + half + 1, image.shape[1])
-        image[r_start:r_end, c_start:c_end] = color        
-    def _create_mask(self, image_shape, contour):
-        mask = np.zeros(image_shape, dtype=bool)
-        rr, cc = polygon(contour[:, 1], contour[:, 0], image_shape)
-        mask[rr, cc] = True
-        return mask
     def _detect_splits_and_merges(self, linked_df, distance_threshold=20, frame_gap=1):
         linked_df = linked_df.copy()
         linked_df['split_event'] = False
@@ -1022,7 +1364,6 @@ class Tracked_image:
                             linked_df.loc[(linked_df['frame'] == t) & (linked_df['particle'].isin([p1, p2])), 'merge_event_prox'] = True
     
         return linked_df
-
 class Single_tracked_folder:
     def __init__(self, folder, ch0_hint = None, ch1_hint = None):
         self.folder = folder
@@ -1078,7 +1419,7 @@ class Single_tracked_folder:
                                    ch1, 
                                    tracks1, 
                                    stats1, 
-                                   px2nm = self._get_px2nm(), 
+                                   nm2px = self._get_px2nm(), 
                                    folder = self.folder
                                    )
             return image1
@@ -1090,12 +1431,12 @@ class Single_tracked_folder:
                                    ch0,
                                    tracks0, 
                                    stats0,
-                                   px2nm = self._get_px2nm(), 
+                                   nm2px = self._get_px2nm(), 
                                    folder = self.folder
                                    )
             return image1
         else: 
-            print('This object is called: "Single_tracked_folder". So, please, at least track something, my friend ;)')          
+            print('No tracking data available')          
     def validate(self):
         # ch0, tracks0, stats0, ch1=None, tracks1=None, stats1=None, coloc_tracks=None, coloc_stats=None, px2nm=108
             # print(f'Data has been tracked with the colocalizing tracks algorithm and the reference channel was {ch0_laser}')
@@ -1134,6 +1475,1020 @@ class Single_tracked_folder:
             return 90.16
         elif result_txt['Computer'] == 'K2-BIVOUAC':
             return 108
+
+class Combined_analysis:
+    def __init__(self, folder, ch0_hint = None, ch1_hint = None, verbose = True):
+        self.folder = folder
+        self.tracked_folder = Single_tracked_folder(folder, ch0_hint = ch0_hint, ch1_hint = ch1_hint) # your tracked spots
+        yaml_file = self.tracked_folder._openyaml()
+        ch0_laser = None
+        if yaml_file:
+            ch0_laser = yaml_file['ch0']
+            ch1_laser = yaml_file['ch1']
+        
+        try:
+            self.tracked = self.tracked_folder.open_files()
+        except Exception as e:
+            if verbose:
+                print(f"Warning: could not open tracked files: {e}")
+            self.tracked = None
+        
+        try:
+            if ch0_laser:
+                self.clusters = Cell_Analyzer(folder, ch0_laser + 'nm', ch1_laser + 'nm')
+            elif ch0_hint:
+                self.clusters = Cell_Analyzer(folder, ch0_hint, ch1_hint)
+            else:
+                self.clusters = Cell_Analyzer(folder)
+            
+            self.spots_outside_clusters = {wl: None for wl in self.clusters.channels}
+            self.cluster_and_spots_stats = {wl: None for wl in self.clusters.channels}
+            self.tracks_outside_clusters = {wl: None for wl in [self.clusters.ch0_wl, self.clusters.ch1_wl]}
+            self.tracks_outside_clusters_stats = {wl: None for wl in [self.clusters.ch0_wl, self.clusters.ch1_wl]}
+            self.cotracks_outside_clusters = None
+            self.cotracks_outside_clusters_stats = None
+            
+            self._load_previous_results()
+            self.nm2px = self.clusters.nm2px
+        
+        except RuntimeError as e:
+            # Catch missing ROI or other initialization errors
+            if verbose:
+                print(f"Warning: could not open images or ROIs files: {e}")
+            self.clusters = None
+        
+        
+        
+    def _load_previous_results(self):
+        """
+        Check if cluster/tracking/co-tracking results exist on disk and load them.
+        Also loads previously saved spots_filtered CSVs.
+        """
+        cluster_dir = os.path.join(self.folder, "cluster_analysis_spots_filtered")
+        
+        # Load filtered spots
+        for ch in self.clusters.channels:
+            spots_file = os.path.join(cluster_dir, f'{ch}_roi_locs_nm.csv')
+            if os.path.exists(spots_file):
+                self.spots_outside_clusters[ch] = pd.read_csv(spots_file)
+        # load cluster and spots stats        
+        for ch in self.clusters.channels:
+            stats_file = os.path.join(cluster_dir, f'{ch}_clusters_and_spots_stats.csv')
+            if os.path.exists(stats_file):
+                self.cluster_and_spots_stats[ch] = pd.read_csv(stats_file)
+        
+        # Load tracks_outside_clusters and tracks_outside_clusters_stats
+        for ch in [self.clusters.ch0_wl, self.clusters.ch1_wl]:
+            tracks_file = os.path.join(cluster_dir, f"{ch}_roi_locs_nm_trackpy.csv")
+            stats_file  = os.path.join(cluster_dir, f"{ch}_roi_locs_nm_trackpy_stats.hdf")
+            
+            if os.path.exists(tracks_file) and os.path.exists(stats_file):
+                self.tracks_outside_clusters[ch] = pd.read_csv(tracks_file)
+                self.tracks_outside_clusters_stats[ch] = pd.read_hdf(stats_file, key='df')
+        
+        # Load co-tracking results
+        coloc_csv  = os.path.join(cluster_dir, f"{self.clusters.ch0_wl}_roi_locs_nm_trackpy_ColocsTracks.csv")
+        coloc_hdf  = os.path.join(cluster_dir, f"{self.clusters.ch0_wl}_roi_locs_nm_trackpy_ColocsTracks_stats.hdf")
+    
+        if os.path.exists(coloc_csv) and os.path.exists(coloc_hdf):
+            self.cotracks_outside_clusters = pd.read_csv(coloc_csv)
+            self.cotracks_outside_clusters_stats = pd.read_hdf(coloc_hdf, key='df')
+
+    def combine_spots_clusters(self, min_size=80, ch='ch0', th_method='li_local',
+                           global_th_mode='max', window_size=15, p=2, q=6, save_videos=False, overwrite = False):
+        if ch == 'ch0':
+            wl = self.clusters.ch0_wl
+        elif ch == 'ch1':
+            wl = self.clusters.ch1_wl
+        results_in_memory = (
+                self.spots_outside_clusters.get(wl) is not None and
+                self.cluster_and_spots_stats.get(wl) is not None
+                         )
+        if not overwrite and results_in_memory:
+            print('Returning results already in memory')
+            return None, self.clusters.result_cluster_analysis[wl], \
+                self.cluster_and_spots_stats[wl], self.clusters.linked_clusters[wl], \
+                self.clusters.linked_clusters_stats[wl], self.spots_outside_clusters[wl]
+                
+        steps = ["Cluster analysis", "Remove spots within clusters", 
+                 "Compute mean intensity", "Merge stats & save videos"]
+    
+        # Use tqdm over the list of steps
+        for step in tqdm(steps, desc="combine_spots_clusters progress", ncols=100):
+            if step == "Cluster analysis":
+                if (self.clusters.result_cluster_analysis[wl] is not None and
+                    self.clusters.summary_cluster_analysis[wl] is not None and
+                    not overwrite):
+                    # Already loaded, skip analysis
+                    clusters_binary = self.clusters.clusters_binary[wl]
+                    clusters_frame = self.clusters.result_cluster_analysis[wl]
+                    results_stats = self.clusters.summary_cluster_analysis[wl]
+                    linked_df = self.clusters.linked_clusters[wl]
+                    linked_stats = self.clusters.linked_clusters_stats[wl]
+                else:
+                    clusters_binary, clusters_frame, results_stats, linked_df, linked_stats = \
+                        self.clusters.analyze_clusters_protein(min_size=min_size, ch=ch, th_method=th_method,
+                                                           global_th_mode=global_th_mode, window_size=window_size,
+                                                           p=p, q=q, save_videos=False, overwrite=overwrite)
+            elif step == "Remove spots within clusters":
+                try:
+                    spots_filtered = self.remove_spots_within_clusters(ch)
+                except:
+                    spots_filtered = pd.DataFrame(columns=['cell_id', 't', 'x_per_cell', 'y_per_cell'])
+    
+            elif step == "Compute mean intensity":
+                mean_intensities = []
+                norm_mean_intensities = []
+            
+                for cell_id, group in spots_filtered.groupby('cell_id'):
+                    img_stack = self.clusters.sep_cells[cell_id][wl]
+                    mask = self.clusters._create_mask(img_stack[0].shape, self.clusters.contours[cell_id])
+                    median_int_out = np.median([np.median(img[~mask]) for img in img_stack])
+            
+                    for idx, spot in group.iterrows():
+                        t = int(spot["t"])
+                        x = spot["x_per_cell"]
+                        y = spot["y_per_cell"]
+                        img = img_stack[t]
+                        mean_intensity = self._compute_mean_intensity(img, x, y, window=1)
+                        mean_intensities.append(mean_intensity)
+                        norm_mean_intensities.append(mean_intensity / median_int_out)
+            
+                spots_filtered["intensity_im"] = mean_intensities
+                spots_filtered["norm_intensity_im"] = norm_mean_intensities
+
+    
+            elif step == "Merge stats & save videos":
+                spot_stats = (
+                    spots_filtered.groupby(['cell_id', 't'])
+                    .agg(
+                        num_spots=('intensity_im', 'count'),
+                        spot_mean_intensity=('intensity_im', 'mean'),
+                        spot_std_intensity=('intensity_im', 'std'),
+                        spot_norm_mean_intensity=('norm_intensity_im', 'mean'),
+                        spot_norm_std_intensity=('norm_intensity_im', 'std')
+                    )
+                    .reset_index()
+                    .rename(columns={'t': 'frame'})
+                )
+                
+                expected_columns = ['num_spots', 'spot_mean_intensity','spot_std_intensity','spot_norm_mean_intensity','spot_norm_std_intensity']
+
+                try:
+                    results_stats = results_stats.merge(
+                        spot_stats,
+                        on=['cell_id', 'frame'],
+                        how='left'
+                    )
+                
+                except Exception as e:
+                    print(f"Merge failed likely due to the lack of clusters: {e}")
+                    for col in expected_columns:
+                        results_stats[col] = np.nan
+
+                    
+                if save_videos:
+                    try:
+                        self.clusters._save_centroid_videos_per_cell(
+                            clusters_binary, clusters_frame, self.clusters.sep_cells, ch=ch,
+                            square_size=2, filtered_spots=spots_filtered, output_dir="cluster_analysis_spots_filtered"
+                        )
+                    except:
+                        pass
+        if self.folder is not None:
+            output_dir = os.path.join(self.folder, 'cluster_analysis_spots_filtered')
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        # clusters_frame.to_csv(os.path.join(output_dir, f'clusters_{wl}.csv'))   
+        results_stats.to_csv(os.path.join(output_dir, f'{wl}_clusters_and_spots_stats.csv'), index = False) 
+        spots_filtered.to_csv(os.path.join(output_dir, f'{wl}_roi_locs_nm.csv'), index = False) 
+        self.cluster_and_spots_stats[wl] = results_stats
+        
+        return clusters_binary, clusters_frame, results_stats, linked_df, linked_stats, spots_filtered
+    def remove_spots_within_clusters(self, ch='ch0'):
+        if self.tracked is None:
+            raise RuntimeError("Tracked files are missing or tracking failed for this folder. Cannot proceed.")
+        if ch == 'ch0':
+            wl = self.clusters.ch0_wl
+        elif ch == 'ch1':
+            wl = self.clusters.ch1_wl
+        
+        clusters = self.clusters.result_cluster_analysis[wl].copy()
+        if ch == 'ch0':
+            spots = self.tracked.tracks0.copy()
+        elif ch == 'ch1':
+            spots = self.tracked.tracks1.copy()
+        else:
+            raise ValueError(f'Channel {ch} is not valid. Use ch0 or ch1.')
+
+        cells = list(spots['cell_id'].drop_duplicates())
+        unique_contour = self.tracked.stats0.loc[self.tracked.stats0['contour'].apply(lambda 
+                                                x: str(x)).drop_duplicates().index, 'contour']
+        
+        corrections = {}
+        for cell, contour in zip(cells, unique_contour):
+            x0 = int(min(contour[:, 0]))
+            y0 = int(min(contour[:, 1]))
+            corrections[cell] = (x0, y0)
+        spots[['x_per_cell', 'y_per_cell']] = spots.apply(
+            lambda row: pd.Series([
+                (row['x']/self.nm2px) - corrections[row['cell_id']][0],
+                (row['y']/self.nm2px) - corrections[row['cell_id']][1]
+            ]),
+            axis=1
+        )
+        # print(clusters)
+        filtered_spots = self._filter_spots_outside_clusters(spots, clusters)
+        cols_to_drop = ['locID', 'track.id', 'loc_count', 'seg.id']
+        spots_to_save = filtered_spots.drop(columns=[c for c in cols_to_drop if c in filtered_spots.columns])
+        spots_to_save = tools.df_convert2px(spots_to_save, self.nm2px)
+        self.spots_outside_clusters[wl] = spots_to_save
+
+        return spots_to_save
+    def retrack(self, overwrite = False):
+        # Check if any channel has pre-analysis done
+        try:
+            if not any(v is not None for v in self.spots_outside_clusters.values()):
+                raise RuntimeError(
+                    "You must run combine_spots_clusters() on at least one channel before retrack()."
+                )
+    
+            
+            # Load Trackpy linking settings
+            yaml_files = glob(os.path.join(self.folder, "*trackpy.yaml"))
+            if not yaml_files:
+                raise FileNotFoundError("No trackpy YAML file found in the folder.")
+            with open(yaml_files[0], 'r') as f:
+                link_settings = yaml.safe_load(f)
+        
+            # Extract dt (frame interval) from result.txt
+            result_files = glob(os.path.join(self.folder, "*result.txt"))
+            if not result_files:
+                raise FileNotFoundError("No result.txt file found in the folder.")
+            with open(result_files[0], 'r') as f:
+                resultLines = f.readlines()
+        
+            if tools.find_string(resultLines, 'Interval'): 
+                interval = tools.find_string(resultLines, 'Interval').split(":")[-1].strip()
+                if interval.split(" ")[-1] == 'sec':
+                    dt = 1.0 * float(interval.split(" ")[0])
+                elif interval.split(" ")[-1] == 'ms':
+                    dt = 0.001 * float(interval.split(" ")[0])
+            else:
+                dtStr = tools.find_string(resultLines, 'Camera Exposure')[17:-1]
+                dt = 0.001 * float((''.join(c for c in dtStr if (c.isdigit() or c == '.'))))
+        
+            # Loop through channels and process only those with data
+            for ch, spots in self.spots_outside_clusters.items():
+                if spots is None:
+                    print(f"Skipping {ch}: combine_spots_clusters() has not been run for this channel or there are no spots.")
+                    continue
+                
+                if (self.tracks_outside_clusters.get(ch) is not None and
+                self.tracks_outside_clusters_stats.get(ch) is not None and
+                not overwrite):
+                    print(f"Skipping {ch}: retracking results already loaded in memory.")
+                    continue
+                
+                print(f"Ret­racking {ch} ...")
+                # Drop old Trackpy-specific columns if present
+                df_locs_clean = spots.rename_axis('locID').reset_index()
+                # Convert nm → px
+                # df_locs_clean = tools.df_convert2px(df_locs_clean, self.nm2px)
+        
+                # Re-link with Trackpy
+                # df_tracksTP = link.link_locs_trackpy(
+                #     df_locs_clean,
+                #     search=link_settings['search'],
+                #     memory=link_settings['memory']
+                # )
+                
+                tracks_list = []
+                next_track_id = 0  # global track counter
+                
+                for cid, group in df_locs_clean.groupby("cell_id"):
+                    group_sorted = group.sort_values("t")  # ensure t is increasing
+                    linked = link.link_locs_trackpy(
+                        group_sorted,
+                        search=link_settings['search'],
+                        memory=link_settings['memory']
+                    )
+                
+                    # offset track IDs to make them globally unique
+                    if not linked.empty:
+                        linked["track.id"] += next_track_id
+                        next_track_id = linked["track.id"].max() + 1
+                
+                    linked["cell_id"] = cid
+                    tracks_list.append(linked)
+                
+                df_tracksTP = pd.concat(tracks_list, ignore_index=True)
+                
+                df_tracksTP = tools.df_convert2nm(df_tracksTP, self.nm2px)
+                df_tracksTP['seg.id'] = df_tracksTP['track.id']
+               # Keep only tracks with more than 1 localization
+                track_counts = df_tracksTP['track.id'].value_counts()
+                tracks_to_keep = track_counts[track_counts > 1].index
+                df_filtered = df_tracksTP[df_tracksTP['track.id'].isin(tracks_to_keep)].copy()
+                
+                # Remove rows with NaNs in critical columns
+                df_filtered = df_filtered.dropna(subset=['x', 'y', 't'])
+                
+                # Ensure numeric types
+                df_filtered[['x','y','t']] = df_filtered[['x','y','t']].apply(pd.to_numeric, errors='coerce')
+                df_filtered = df_filtered.dropna(subset=['x','y','t'])
+                
+                
+                
+                # Now compute stats safely
+                df_stats = link.get_particle_stats(df_filtered, dt=dt, particle='track.id', t='t')
+    
+                # Add ROI info by cell_id
+                roi_info = (
+                    self.tracked.stats0[['path', 'contour', 'area', 'centroid', 'cell_id']]
+                    .drop_duplicates(subset=['cell_id'])
+                )
+                
+                df_stats = df_stats.merge(roi_info, on='cell_id', how='left')
+        
+                # Convert back px → nm
+                
+                output_dir = os.path.join(self.folder, 'cluster_analysis_spots_filtered')
+                
+                df_tracksTP.to_csv(os.path.join(output_dir, f"{ch}_roi_locs_nm_trackpy.csv"), index = False)
+                df_stats.to_hdf(os.path.join(output_dir, f"{ch}_roi_locs_nm_trackpy_stats.hdf"), key = 'df')
+                # Save results
+                self.tracks_outside_clusters[ch] = df_tracksTP
+                self.tracks_outside_clusters_stats[ch] = df_stats
+        
+                print(f"Finished retracking {ch} ({len(df_tracksTP)} tracks).")
+        except:
+            self.tracks_outside_clusters[ch] = None
+            self.tracks_outside_clusters_stats[ch] = None
+    def recoloc_tracks(self, overwrite = False):
+        # try:
+            results_in_memory = (
+                    self.cotracks_outside_clusters is not None and
+                        self.cotracks_outside_clusters_stats is not None
+                        )
+            if results_in_memory and not overwrite:
+                print('Skipping: recoloc results already loaded in memory.')
+                return
+            
+            
+            if not any(v is not None for v in self.tracks_outside_clusters.values()):
+                raise RuntimeError(
+                    "You must run retrack() before recoloc_tracks()."
+                )
+            
+            # 1. load coloc settings from YAML
+            yaml_files = glob(os.path.join(self.folder, "*_colocsTracks.yaml"))
+            if not yaml_files:
+                raise FileNotFoundError("No *_colocsTracks.yaml found in the folder.")
+            yaml_file = yaml_files[0]
+            with open(yaml_file, "r") as f:
+                coloc_settings_all = list(yaml.safe_load_all(f))
+            coloc_settings = coloc_settings_all[-1]
+            df_locs_ch0 = self.tracks_outside_clusters[self.clusters.ch0_wl]
+            df_locs_ch1 = self.tracks_outside_clusters[self.clusters.ch1_wl]
+            # print(df_locs_ch0)
+            # 2. run coloc analysis
+            df_colocs, coloc_stats = coloc.coloc_tracks(
+                df_locs_ch0,
+                df_locs_ch1,
+                leng=coloc_settings['min_len_track'] ,
+                max_distance=coloc_settings['th'],
+                n=coloc_settings['min_overlapped_frames']
+            )
+            # 3. Attach ROI info (if available in stats0)
+            if hasattr(self.tracked, "stats0"):
+                roi_info = (
+                    self.tracked.stats0[["path", "contour", "area", "centroid", "cell_id"]]
+                    .drop_duplicates(subset=["cell_id"])
+                )
+                coloc_stats = coloc_stats.merge(roi_info, on="cell_id", how="left")
+        
+            # 4. Save results to self and to folder
+            output_dir = os.path.join(self.folder, 'cluster_analysis_spots_filtered')
+            df_colocs.to_csv(os.path.join(output_dir, f"{self.clusters.ch0_wl}_roi_locs_nm_trackpy_ColocsTracks.csv"), index = False)
+            coloc_stats.to_hdf(os.path.join(output_dir, f"{self.clusters.ch0_wl}_roi_locs_nm_trackpy_ColocsTracks_stats.hdf"), key = 'df')
+            self.cotracks_outside_clusters = df_colocs
+            self.cotracks_outside_clusters_stats = coloc_stats
+        # except: 
+        #     self.cotracks_outside_clusters = None
+        #     self.cotracks_outside_clusters_stats = None
+    def extract_Ds_filtered(self, mature_class = 1, min_len = 10,  ch = 'ch0'):
+        if not any(v is not None for v in self.tracks_outside_clusters.values()):
+            raise RuntimeError(
+                "You must run retrack() before extract_Ds_filtered()."
+            )
+        if not any(v is not None for v in self.clusters.maturation.values()):
+            raise RuntimeError(
+                "You must run clusters.predict_maturation() before get_Ds_filtered()."
+            )
+        if ch == 'ch0':
+            wl = self.clusters.ch0_wl
+        elif ch == 'ch1':
+            wl = self.clusters.ch1_wl  
+        maturation = self.clusters.maturation[wl]
+        
+        if not any(v is not None for v in self.clusters.maturation.values()):
+            print("Warning: maturation is empty. Returning empty DataFrame.")
+            return pd.DataFrame(columns=['track.id', 'cell_id', 'D_msd'])
+        else:
+            if mature_class:
+                mature_cells = maturation.loc[maturation['category'] == mature_class, 'cell']
+            else:
+                mature_cells = maturation.cell
+            stats = self.tracks_outside_clusters_stats[wl] 
+            columns_to_extract = ['track.id', 'cell_id', 'D_msd']
+            ds = stats[
+            (stats['length'] >= min_len) & (stats['cell_id'].isin(mature_cells))][columns_to_extract]
+            ds = ds.dropna(subset=['D_msd'])
+            return ds
+    def extract_dwell_filtered(self,mature_class = 1, frame_rate = None, min_len=10, 
+                               max_dist = 250, ref='ch0', ch_maturation_selection = 'ch1'):
+        if self.cotracks_outside_clusters is None or self.cotracks_outside_clusters_stats is None:
+            raise RuntimeError("You must run recoloc_tracks() before extract_dwell_filtered().")
+        if not any(v is not None for v in self.clusters.maturation.values()):
+            raise RuntimeError("You must run clusters.predict_maturation() before extract_dwell_filtered().")
+
+        stats = self.cotracks_outside_clusters_stats
+        tracks = self.cotracks_outside_clusters
+        # Extract dt (frame interval) from result.txt
+        
+        if not frame_rate: 
+            result_files = glob(os.path.join(self.folder, "*result.txt"))
+            if not result_files:
+                raise FileNotFoundError("No result.txt file found in the folder.")
+            else: 
+                with open(result_files[0], 'r') as f:
+                    resultLines = f.readlines()
+            
+                if tools.find_string(resultLines, 'Interval'): 
+                    interval = tools.find_string(resultLines, 'Interval').split(":")[-1].strip()
+                    if interval.split(" ")[-1] == 'sec':
+                        dt = 1.0 * float(interval.split(" ")[0])
+                    elif interval.split(" ")[-1] == 'ms':
+                        dt = 0.001 * float(interval.split(" ")[0])
+                else:
+                    dtStr = tools.find_string(resultLines, 'Camera Exposure')[17:-1]
+                    dt = 0.001 * float((''.join(c for c in dtStr if (c.isdigit() or c == '.'))))
+                frame_rate = dt
+        
+        if ch_maturation_selection == 'ch0':
+            wl_mat = self.clusters.ch0_wl
+        elif ch_maturation_selection == 'ch1':
+            wl_mat = self.clusters.ch1_wl  
+        if ref == 'ch0':
+            wl = self.clusters.ch0_wl
+        elif ref== 'ch1':
+            wl = self.clusters.ch1_wl 
+        
+        maturation = self.clusters.maturation[wl_mat]
+        mature_cells = maturation.loc[maturation['category'] == mature_class, 'cell'].tolist()
+                
+        if all(isinstance(obj, pd.DataFrame) for obj in [stats, tracks]):
+            unique_colocIDs = stats[
+            (stats['num_frames_coloc'] > min_len) &
+            (stats['cell_id'].isin(mature_cells))
+        ]['colocID'].unique()
+            data = []
+            for i in unique_colocIDs:#[7:8]:
+                colocalized_df = tracks[(tracks['colocID'] == i) & (tracks['distance'] <= max_dist) & pd.notna(tracks['x']) & pd.notna(tracks['y'])]
+                if not colocalized_df.empty:
+                    start_time = colocalized_df['t'].min()*frame_rate
+                locs_ch0 = tracks[tracks.colocID == i][['x_0', 'y_0', 't', 'intensity_0']]
+                locs_ch0 = locs_ch0.dropna(axis = 0)
+                locs_ch1 = tracks[tracks.colocID == i][['x_1', 'y_1', 't', 'intensity_1']]
+                locs_ch1 = locs_ch1.dropna(axis = 0)
+                times_0 = {'ch0': locs_ch0.t, 'ch1': locs_ch1.t}.get(ref)
+                if min(times_0) * frame_rate < start_time:
+                    dt = start_time - min(times_0) * frame_rate
+                    # Create a Series with the same columns
+                    other_ref = 'ch1' if ref == 'ch0' else 'ch0'
+                    track_ids = {'ch0': stats[stats.colocID == i]['track.id0'].values[0], 'ch1': stats[stats.colocID == i]['track.id1'].values[0]}
+                    data.append([i, track_ids.get(ref), track_ids.get(other_ref),
+                                          
+                                          stats[stats.colocID == i]['cell_id'].values[0],
+                                          dt])
+                    
+            dwell_times = pd.DataFrame(data, columns=['colocID', 'track.id_ref', 'track.id_binds', 'cell_id', 'dwell_time'])
+            
+            return dwell_times
+        else:
+            return None
+    def _filter_spots_outside_clusters(self, spots_df, clusters_df):
+        keep_mask = []
+
+        for idx, spot in spots_df.iterrows():
+            frame = spot['t']
+            x, y = spot['x_per_cell'], spot['y_per_cell']
+            contours = clusters_df[clusters_df['frame'] == int(frame)]['contour']
+
+            inside_any = False
+            for contour in contours:
+                if contour.size == 0:
+                    continue
+                if cv2.pointPolygonTest(contour, (x, y), False) >= 0:
+                    inside_any = True
+                    break
+            keep_mask.append(not inside_any)
+
+        filtered_spots = spots_df[keep_mask].reset_index(drop=True)
+        return filtered_spots
+    def _compute_mean_intensity(self, image, x, y, window=1):
+        """
+        Compute mean intensity in a (2*window+1)x(2*window+1) patch --> if 1 --> 3x3
+        around (x, y) in a given image.
+        Assumes x, y are in pixel coordinates.
+        """
+        xi, yi = int(round(x)), int(round(y))
+        x_min, x_max = max(0, xi - window), min(image.shape[1], xi + window + 1)
+        y_min, y_max = max(0, yi - window), min(image.shape[0], yi + window + 1)
+        patch = image[y_min:y_max, x_min:x_max]
+        return np.mean(patch) if patch.size > 0 else np.nan
+
+class Dataset_combined_analysis:
+    def __init__(self, folder):
+        self.folder = folder
+        self.conditions = self._get_conditions()
+        self.conditions_to_use = self.conditions
+        self._conditions_paths = [os.path.join(self.folder, subfolder) for subfolder in self.conditions_to_use]
+        self.failed_folders = []
+        self.result_count = None
+        self.run_paths = []
+        self._collect_run_paths()
+        path_yaml = glob(self.folder + r'/**/*_colocsTracks.yaml', recursive=True)
+        general_yaml_file = self._openyaml(path_yaml)
+        self.ch0_hint = general_yaml_file['ch0']+'nm'
+        self.ch1_hint = general_yaml_file['ch1']+'nm'
+        
+    def _get_conditions(self):
+        return [f.name for f in os.scandir(self.folder) if f.is_dir()]
+
+    def _collect_run_paths(self):
+        run_pattern = re.compile(r'^Run\d+$')
+        for cond_path in self._conditions_paths:
+            for root, dirs, files in os.walk(cond_path):
+                matching_dirs = [d for d in dirs if run_pattern.match(d)]
+                for d in matching_dirs:
+                    full_path = os.path.join(root, d)
+                    self.run_paths.append(full_path)
+                dirs[:] = [d for d in dirs if not run_pattern.match(d)]
+    def select_conditions(self, indices):
+        self.conditions_to_use = [self.conditions[i] for i in indices]
+        self._conditions_paths = [os.path.join(self.folder, subfolder) for subfolder in self.conditions_to_use]
+
+        # Filter run_paths to only include selected conditions
+        self.run_paths = [p for p in self.run_paths if any(cond in p for cond in self.conditions_to_use)]
+    def analyze_clusters_protein(self, min_size=80, ch='ch0', th_method='li_local', global_th_mode='max',
+                             window_size=15, p=2, q=6, save_videos=False, overwrite=False, verbose=True):
+        """
+        Run Cell_analyzer.clusters.analyze_clusters_protein on all runs in this dataset.
+        """
+        for run_path in self.run_paths:
+            try:
+                if verbose:
+                    print(f"Analyzing clusters: {run_path}")
+                ca = Combined_analysis(run_path,ch0_hint=self.ch0_hint, ch1_hint=self.ch1_hint, verbose=verbose)
+                ca.clusters.analyze_clusters_protein(
+                    min_size=min_size,
+                    ch=ch,
+                    th_method=th_method,
+                    global_th_mode=global_th_mode,
+                    window_size=window_size,
+                    p=p,
+                    q=q,
+                    save_videos=save_videos,
+                    overwrite=overwrite
+                )
+            except Exception as e:
+                if verbose:
+                    print(f"Failed cluster analysis on {run_path}: {e}")
+                self.failed_folders.append([run_path, e, 'analyze_clusters_protein'])
+    def predict_maturation(self, model, preprocess_frame_func=None, save_plot=False, 
+                       N_rolling=5, ch='ch0', r2_thresh=0.75, low_thresh=0.4, high_thresh=0.6,
+                       overwrite=False, verbose=True):
+        """
+        Run Cell_analyzer.predict_maturation on all runs in this dataset.
+        """
+        for run_path in self.run_paths:
+            try:
+                if verbose:
+                    print(f"Predicting maturation: {run_path}")
+                ca = Combined_analysis(run_path,ch0_hint=self.ch0_hint, ch1_hint=self.ch1_hint, verbose=verbose)
+                ca.clusters.predict_maturation(
+                    model=model,
+                    preprocess_frame_func=preprocess_frame_func,
+                    save_plot=save_plot,
+                    N_rolling=N_rolling,
+                    ch=ch,
+                    r2_thresh=r2_thresh,
+                    low_thresh=low_thresh,
+                    high_thresh=high_thresh,
+                    overwrite=overwrite
+                )
+            except Exception as e:
+                if verbose:
+                    print(f"Failed maturation prediction on {run_path}: {e}")
+                self.failed_folders.append([run_path, e, 'predict_maturation'])
+    def combine_spots_clusters(self, min_size=80, ch='ch0', th_method='li_local',
+                    global_th_mode='max', window_size=15, p=2, q=6, save_videos=True, verbose=True, overwrite = False):
+        """
+        Run Combined_analysis.combine_spots_clusters on all runs in this dataset.
+        Saves outputs in each run folder automatically.
+        """
+
+        for run_path in self.run_paths:
+            try:
+                print(f'Analyzing: {run_path}')
+                ca = Combined_analysis(run_path,ch0_hint=self.ch0_hint, ch1_hint=self.ch1_hint, verbose=verbose)
+                if ca.clusters is None:
+                    if verbose:
+                        print(f"Skipping {run_path}: cluster initialization failed.")
+                    self.failed_folders.append(run_path)
+                    continue
+
+                _ = ca.combine_spots_clusters(
+                    min_size=min_size, ch=ch, th_method=th_method,
+                    global_th_mode=global_th_mode, window_size=window_size,
+                    p=p, q=q, save_videos=save_videos, overwrite=overwrite
+                )
+                # if verbose:
+                    # print(f"Finished combine_spots_clusters for {run_path}")
+
+            except Exception as e:
+                if verbose:
+                    print(f"Failed on {run_path}: {e}")
+                self.failed_folders.append([run_path, e, 'combine_spots_clusters'])
+                
+    def retrack(self, verbose=True, overwrite = False):
+        """
+        Run Combined_analysis.retrack on all runs in this dataset.
+        Saves outputs in each run folder automatically.
+        """
+        for run_path in self.run_paths:
+            try:
+                print(f'Analyzing: {run_path}')
+                ca = Combined_analysis(run_path, verbose=verbose)
+                if not any(v is not None for v in ca.spots_outside_clusters.values()):
+                    if verbose:
+                        print(f"Skipping {run_path}: combine_spots_clusters() not run yet.")
+                    self.failed_folders.append(run_path)
+                    continue
+
+                ca.retrack(overwrite=overwrite)
+
+                # if verbose:
+                #     print(f"Finished retrack for {run_path}")
+
+            except Exception as e:
+                if verbose:
+                    print(f"Failed retrack on {run_path}: {e}")
+                self.failed_folders.append([run_path, e, 'retrack'])
+
+    def recoloc_tracks(self, verbose=True, overwrite= False):
+        """
+        Run Combined_analysis.recoloc_tracks on all runs in this dataset.
+        Saves outputs in each run folder automatically.
+        """
+        for run_path in self.run_paths:
+            try:
+                ca = Combined_analysis(run_path, verbose=verbose)
+                if not any(v is not None for v in ca.tracks_outside_clusters.values()):
+                    if verbose:
+                        print(f"Skipping {run_path}: retrack() not run yet.")
+                    self.failed_folders.append(run_path)
+                    continue
+
+                ca.recoloc_tracks(overwrite=overwrite)
+
+                if verbose:
+                    print(f"Finished recoloc_tracks for {run_path}")
+
+            except Exception as e:
+                if verbose:
+                    print(f"Failed recoloc_tracks on {run_path}: {e}")
+                self.failed_folders.append([run_path, e, 'recoloc_tracks'])
+    #predict maturity and analyze clusters
+    def count_number_cotracks(self,mature_class=1, min_len = 5,
+                              ch_maturation_selection = 'ch1', source = 'tracked'):
+        """
+        Extract number of tracks and colocalized tracks from tracked or filtered data.
+        
+        Parameters
+        ----------
+        source : str
+            One of ["tracked", "filtered", "filtered_mature"].
+        mature_class : int
+            Which maturation category to use (only relevant if source="filtered_mature").
+        """
+        results = []
+        for cond_path, cond_name in zip(self._conditions_paths, self.conditions_to_use):
+            run_folders = []
+            run_pattern = re.compile(r'^Run\d+$')
+            for root, dirs, files in os.walk(cond_path):
+                matching_dirs = [d for d in dirs if run_pattern.match(d)]
+                for d in matching_dirs:
+                    full_path = os.path.join(root, d)
+                    run_folders.append(full_path)
+            result_cond = []
+        
+            for run_folder in tqdm(run_folders):
+                if source == "tracked":
+                    try:
+                        a = Single_tracked_folder(run_folder, self.ch0_hint, self.ch1_hint).open_files()
+                        ch0_stats = a.stats0
+                        ch1_stats = a.stats1
+                        coloc_stats = a.coloc_stats
+                    except: 
+                        ch0_stats = None
+                        ch1_stats = None
+                        coloc_stats = None
+                else:  # use Combined_analysis
+                    a = Combined_analysis(run_folder, ch0_hint = self.ch0_hint, ch1_hint = self.ch1_hint, verbose=False)
+                    if a.clusters is None:
+                        continue
+                    if source == "filtered":
+                        ch0_stats = a.tracks_outside_clusters_stats[a.clusters.ch0_wl]
+                        ch1_stats = a.tracks_outside_clusters_stats[a.clusters.ch1_wl]
+                        coloc_stats = a.cotracks_outside_clusters_stats
+                    elif source == "filtered_mature":
+                        if ch_maturation_selection == 'ch0':
+                            wl_mat = a.clusters.ch0_wl
+                        elif ch_maturation_selection == 'ch1':
+                            wl_mat = a.clusters.ch1_wl
+                        else: 
+                            print(f'{ch_maturation_selection} is not a valid ch_maturation_selection')
+                        maturation = a.clusters.maturation[wl_mat]
+                        if isinstance(maturation, pd.DataFrame):
+                            cells = maturation[maturation.category == mature_class]['cell']    
+                            if isinstance(a.tracks_outside_clusters_stats[a.clusters.ch0_wl], pd.DataFrame) and not a.tracks_outside_clusters_stats[a.clusters.ch0_wl].empty:
+                                ch0_stats = a.tracks_outside_clusters_stats[a.clusters.ch0_wl][a.tracks_outside_clusters_stats[a.clusters.ch0_wl]['cell_id'].isin(cells)]
+                            else: 
+                                ch0_stats = None
+                            if isinstance(a.tracks_outside_clusters_stats[a.clusters.ch1_wl], pd.DataFrame) and not a.tracks_outside_clusters_stats[a.clusters.ch1_wl].empty:
+                                ch1_stats = a.tracks_outside_clusters_stats[a.clusters.ch1_wl][a.tracks_outside_clusters_stats[a.clusters.ch1_wl]['cell_id'].isin(cells)]
+                            else: 
+                                ch1_stats = None
+                            if isinstance(a.cotracks_outside_clusters_stats, pd.DataFrame) and not a.cotracks_outside_clusters_stats.empty:
+                                coloc_stats = a.cotracks_outside_clusters_stats[a.cotracks_outside_clusters_stats['cell_id'].isin(cells)]
+                            else: 
+                                coloc_stats = None
+                        else:
+                            continue
+                    else:
+                        raise ValueError(f"Unknown source={source}")
+                
+                    # Decide which set of stats to use
+                    if isinstance(ch0_stats, pd.DataFrame) and not ch0_stats.empty:
+                        # Count tracks for channel 0
+                        ch0_tracks = ch0_stats[ch0_stats.loc_count  >= min_len].shape[0] 
+                    else:
+                        ch0_tracks = 0
+                    if isinstance(ch1_stats, pd.DataFrame) and not ch1_stats.empty:
+                        # Count tracks for channel 1
+                        ch1_tracks = ch1_stats[ch1_stats.loc_count  >= min_len].shape[0]
+                    else: 
+                        ch1_tracks = 0
+                    if isinstance(coloc_stats, pd.DataFrame) and not coloc_stats.empty:
+                        # Count colocalized tracks
+                        coloc_count = coloc_stats[coloc_stats['num_frames_coloc'] >= min_len].shape[0]
+                    else:
+                        coloc_count = 0
+                results.append({
+                    "folder": run_folder,
+                    "condition": cond_name,
+                    "colocalized_tracks": coloc_count,
+                    "ch0_tracks": ch0_tracks,
+                    "ch1_tracks": ch1_tracks,
+                    "min_len_track": min_len,
+                })
+            
+            
+        self.result_count = pd.DataFrame(results)
+        return self.result_count
+    def summary_count_number_cotracks(self):
+        if isinstance(self.result_count, pd.DataFrame):
+            aggregated_df = self.result_count.groupby('condition').agg(
+                total_colocalized_tracks=pd.NamedAgg(column='colocalized_tracks', aggfunc='sum'),
+                total_ch0_tracks=pd.NamedAgg(column='ch0_tracks', aggfunc='sum'),
+                total_ch1_tracks=pd.NamedAgg(column='ch1_tracks', aggfunc='sum')
+            ).reset_index()
+            return aggregated_df
+        else: 
+            print("run count_number_cotracks first")
+    # def combine_spots_clusters(self, min_size=80, ch='ch0', th_method='li_local',
+                                   # global_th_mode='max', window_size=15, p=2, q=6, save_videos=False):    
+    def get_Ds(self, mature_class=1, min_len=10, ch='ch0', source="tracked"):
+        """
+        Extract diffusion coefficients from tracked or filtered data.
+        
+        Parameters
+        ----------
+        min_len : int
+            Minimum track length.
+        channel : str
+            Channel to use ('ch0' or 'ch1').
+        source : str
+            One of ["tracked", "filtered", "filtered_mature"].
+        mature_class : int
+            Which maturation category to use (only relevant if source="filtered_mature").
+        """
+        all_ds = []
+        box = BoxPlotter(xlabel="Conditions", ylabel="Diff. Coeff. (um^2/sec)")
+        
+        for cond_path, cond_name in zip(self._conditions_paths, self.conditions_to_use):
+            print(f"\nAnalyzing {cond_path}...")
+            run_folders = []
+            run_pattern = re.compile(r'^Run\d+$')
+            for root, dirs, files in os.walk(cond_path):
+                matching_dirs = [d for d in dirs if run_pattern.match(d)]
+                for d in matching_dirs:
+                    full_path = os.path.join(root, d)
+                    run_folders.append(full_path)
+            ds_cond = []
+            
+            for run_folder in tqdm(run_folders):
+                if source == "tracked":
+                    try:
+                        image = Single_tracked_folder(run_folder, self.ch0_hint, self.ch1_hint).open_files()
+                        ds = image.extract_Ds(min_len, ch)
+                    except: 
+                        ds = pd.DataFrame()
+                    
+                else:  # use Combined_analysis
+                    analysis = Combined_analysis(run_folder, verbose=False)
+                    if analysis.tracked is None or analysis.clusters is None:
+                        continue
+                    
+                    if source == "filtered":
+                        ds = analysis.extract_Ds_filtered(mature_class=None, min_len=min_len, ch=ch)
+                    elif source == "filtered_mature":
+                        ds = analysis.extract_Ds_filtered(mature_class=mature_class, min_len=min_len, ch=ch)
+                    else:
+                        raise ValueError(f"Unknown source={source}")
+    
+                if isinstance(ds, pd.DataFrame) and not ds.empty:
+                    ds.insert(0, 'condition', cond_name)
+                    ds.insert(0, 'run', run_folder)
+                    all_ds.append(ds)
+                    ds_cond.append(ds)
+    
+            if ds_cond:
+                final_cond = pd.concat(ds_cond, ignore_index=True)
+                box.add_box(final_cond.D_msd, cond_name)
+    
+        final_ds = pd.concat(all_ds, ignore_index=True) if all_ds else pd.DataFrame()
+        return final_ds, box
+
+    def get_dwell(self, mature_class = 1, min_len=10, frame_rate = 1, max_dist = 250,  
+                  ref='ch0', ch_maturation_selection = 'ch1',
+                  source="tracked", x0=0, xt=None, y0=0, yt=None):
+        all_dwell = []
+        try:
+            frame_rate = self._get_frame_rate()
+        except: 
+            frame_rate = frame_rate
+        hist = HistogramPlotter(xlabel="dwell_time(sec)", ylabel="Frequency")
+
+        for cond_path, cond_name in zip(self._conditions_paths, self.conditions_to_use):
+            print(f"\nAnalyzing {cond_path}...")
+            run_folders = []
+            run_pattern = re.compile(r'^Run\d+$')
+            for root, dirs, files in os.walk(cond_path):
+                matching_dirs = [d for d in dirs if run_pattern.match(d)]
+                for d in matching_dirs:
+                    full_path = os.path.join(root, d)
+                    run_folders.append(full_path)
+            dwell_cond = []
+            
+            
+            # pathshdf = glob(cond_path + '/**/**colocsTracks_stats.hdf', recursive=True)
+            # paths_locs = list(set(os.path.dirname(file) for file in pathshdf))
+            for run_folder in tqdm(run_folders):
+                try:
+                    if source == "tracked":
+                        image = Single_tracked_folder(run_folder).open_files()
+                        dwell = image.extract_dwell(frame_rate, min_len, max_dist, ref)                    
+                    else:  # use Combined_analysis
+                        analysis = Combined_analysis(run_folder, verbose=False)
+                        if analysis.tracked is None or analysis.clusters is None:
+                            continue
+                        
+                        if source == "filtered":
+                            dwell = analysis.extract_dwell_filtered(mature_class=None, frame_rate = frame_rate,
+                                                                 min_len=min_len, max_dist = max_dist, 
+                                                                 ref=ref, ch_maturation_selection = ch_maturation_selection)
+                        elif source == "filtered_mature":
+                            dwell = analysis.extract_dwell_filtered(mature_class=mature_class, frame_rate = frame_rate,
+                                                                 min_len=min_len, max_dist = max_dist, 
+                                                                 ref=ref, ch_maturation_selection = ch_maturation_selection)
+                        else:
+                            raise ValueError(f"Unknown source={source}")
+                        if isinstance(dwell, pd.DataFrame):
+                            dwell.insert(0, 'condition', cond_name)
+                            dwell.insert(0, 'run', run_folder)
+                            all_dwell.append(dwell)
+                            dwell_cond.append(dwell)
+                except Exception as e:
+                    self.failed_folders.append((run_folder, str(e)))
+                    print(f"Skipping folder {run_folder} due to error: {e}")
+                    continue
+
+            if dwell_cond:
+                final_cond = pd.concat(dwell_cond, ignore_index=True)
+                hist.add_data(final_cond.dwell_time, label=cond_name)
+
+        final_dwell = pd.concat(all_dwell, ignore_index=True) if all_dwell else pd.DataFrame()
+        hist.set_labels()
+        hist.set_xlim(x0, xt)
+        hist.set_ylim(y0, yt)
+        hist.show_plot()
+
+        return final_dwell, hist
+    def count_maturation(self, ch = '488nm'):
+        result = []
+        for cond_path, cond_name in zip(self._conditions_paths, self.conditions_to_use):
+            print(f"\nAnalyzing {cond_path}...")
+            run_folders = []
+            run_pattern = re.compile(r'^Run\d+$')
+            for root, dirs, files in os.walk(cond_path):
+                matching_dirs = [d for d in dirs if run_pattern.match(d)]
+                for d in matching_dirs:
+                    full_path = os.path.join(root, d)
+                    run_folders.append(full_path)
+            dwell_cond = []
+            
+            
+            # pathshdf = glob(cond_path + '/**/**colocsTracks_stats.hdf', recursive=True)
+            # paths_locs = list(set(os.path.dirname(file) for file in pathshdf))
+            for run_folder in tqdm(run_folders):
+                maturation_json = os.path.join(run_folder, 'maturation_analysis',f"maturation__{ch}.json")
+                if os.path.exists(maturation_json):
+                    with open(maturation_json, "r") as f:
+                        maturation = pd.DataFrame(json.load(f))
+                maturation['condition'] = cond_name
+                result.append(maturation[['run', 'cell', 'category', 'condition']])
+        
+        final = pd.concat(result, ignore_index=True) if result else pd.DataFrame()
+        return final
+                
+    def print_failed_folders(self):
+        if self.failed_folders:
+            print("The following folders failed during processing:")
+            for folder, error in self.failed_folders:
+                print(f"- {folder}: {error}")
+        else:
+            print("All folders processed successfully.")
+    def _get_px2nm(self): #if self.transform = True, this will get the correct naclib coefficients (Annapurna VS K2)
+        resultPath  = glob(self.folder + '/**/**result.txt', recursive=True)[0]
+        result_txt  = tools.read_result_file(resultPath) #this opens the results.txt file to check the microscope used. 
+                #It should be in a folder called paramfile inside the folder where the script is located. 
+        if result_txt['Computer'] == 'ANNAPURNA': 
+            return 90.16
+        elif result_txt['Computer'] == 'K2-BIVOUAC':
+            return 108
+    def _get_frame_rate(self): #if self.transform = True, this will get the correct naclib coefficients (Annapurna VS K2)
+        resultPath  = glob(self.folder + '/**/**result.txt', recursive=True)[0]
+        result_txt  = tools.read_result_file(resultPath) #this opens the results.txt file to check the microscope used. 
+                #It should be in a folder called paramfile inside the folder where the script is located. 
+        time_unit = result_txt['Interval']
+        time = time_unit.split(' ')[0]
+        unit = time_unit.split(' ')[1]
+        if unit == 'sec':
+            return float(time)
+        elif unit == 'ms':
+            return int(time)/1000
+        elif unit == 'min':
+            return int(time)*1000
+           
+    def _count_run_folders_recursive(self, root_folder):
+        pattern = re.compile(r'^Run\d+$')
+        count = 0
+
+        for dirpath, dirnames, _ in os.walk(root_folder):
+            for dirname in dirnames:
+                if pattern.match(dirname):
+                    count += 1
+        return count
+    def _openyaml(self, name):
+        # Load YAML content if found
+        with open(name[0], 'r') as file:
+            data_parts = list(yaml.safe_load_all(file))
+        yaml_data = {}
+        for part in data_parts:
+            yaml_data.update(part)
+        return yaml_data
+    def validate(self):
+        print("Just a reminder that most of the time the whole dataset should be analyzed using the same parameters.")
+        print("Here are the parameters for the first folder in the dataset that has colocalized tracks:")
+        yaml = self._openyaml(glob(self.folder + r'/**/*_colocsTracks.yaml', recursive=True))
+        for i, j in enumerate(yaml.items()):
+            print(f"{j[0]}: {j[1]}")
+
 
 class Dataset_tracked_folder:
     def __init__(self, folder):
