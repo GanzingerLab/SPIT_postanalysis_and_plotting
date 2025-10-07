@@ -45,33 +45,102 @@ logging.getLogger('trackpy').setLevel(logging.ERROR)
 
 
 class Plotter:
+    """
+    A convenience wrapper around Matplotlib for consistent and streamlined plotting.
+
+    The `Plotter` class simplifies the process of creating, labeling, displaying,
+    and saving plots with consistent formatting. It provides quick methods for
+    setting axis limits, enabling grids, refreshing figures, and handling legends.
+
+    Attributes
+    ----------
+    title : str
+        Title of the plot.
+    xlabel : str
+        Label for the X-axis.
+    ylabel : str
+        Label for the Y-axis.
+    figsize : touple
+        Image size in inches. 
+    fig : matplotlib.figure.Figure
+        The main Matplotlib figure object.
+    ax : matplotlib.axes.Axes
+        The main Matplotlib axes object.
+
+    Methods
+    -------
+    set_labels()
+        Apply the plot title and axis labels.
+    set_ylim(s, e=None)
+        Set the vertical axis (Y) limits.
+    set_xlim(s, e=None)
+        Set the horizontal axis (X) limits.
+    set_grid(visible=True, which='both', axis='both', linestyle='--', linewidth=0.5)
+        Enable or configure gridlines on the plot.
+    show_plot(legend_loc='best')
+        Display the plot and add a legend if available.
+    save_plot(filename, dpi=300)
+        Save the current plot to a file.
+    refresh(legend_loc='best')
+        Refresh the figure for live updates (useful in interactive mode).
+    """
     def __init__(self, title="Plot", xlabel="X-axis", ylabel="Y-axis", figsize = (6.4, 4.8)):
         self.title = title
         self.xlabel = xlabel
         self.ylabel = ylabel
         self.fig, self.ax = plt.subplots(figsize=figsize)
     def set_labels(self):
+        """
+        Apply the title and axis labels to the current plot.
+
+        This method sets the `title`, `xlabel`, and `ylabel` properties of the
+        Matplotlib Axes object associated with this Plotter.
+        """
         self.ax.set_title(self.title)
         self.ax.set_xlabel(self.xlabel)
         self.ax.set_ylabel(self.ylabel)     
     def set_ylim(self, s, e = None):
+        """
+        Set the limits of the Y-axis.
+
+        Parameters
+        ----------
+        s : float
+            Lower Y-axis limit.
+        e : float, optional
+            Upper Y-axis limit. If omitted, Matplotlib will auto-scale.
+        """
         self.ax.set_ylim(s, e)
     def set_xlim(self, s, e = None):
+        """
+        Set the limits of the X-axis.
+
+        Parameters
+        ----------
+        s : float
+            Lower X-axis limit.
+        e : float, optional
+            Upper X-axis limit. If omitted, Matplotlib will auto-scale.
+        """
         self.ax.set_xlim(s, e)
     def show_plot(self, legend_loc='best'):
-        '''
-        Shows plot with the legend (if there is any). Locations for the legend:
-            'best' (default): Automatically chooses the best location.
-            'upper right'
-            'upper left'
-            'lower left'
-            'lower right'
-            'right'
-            'center left'
-            'center right'
-            'lower center'
-            'upper center'
-        '''
+        """
+        Display the current plot, adding a legend if one exists.
+
+        Parameters
+        ----------
+        legend_loc : str, optional
+            Location of the legend. Default is 'best'.
+
+            Valid options include:
+                'best', 'upper right', 'upper left', 'lower left', 'lower right',
+                'right', 'center left', 'center right', 'lower center', 'upper center'
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The displayed Matplotlib Figure object.
+        """
         
         handles, labels = self.ax.get_legend_handles_labels()
         if handles:
@@ -79,10 +148,46 @@ class Plotter:
         plt.show()
         return self.fig
     def set_grid(self, visible=True, which='both', axis='both', linestyle='--', linewidth=0.5):
+        """
+       Enable or configure gridlines on the plot.
+
+       Parameters
+       ----------
+       visible : bool, optional
+           Whether to display gridlines. Default is True.
+       which : {'major', 'minor', 'both'}, optional
+           Which gridlines to show. Default is 'both'.
+       axis : {'x', 'y', 'both'}, optional
+           Which axes to apply gridlines to. Default is 'both'.
+       linestyle : str, optional
+           Line style for gridlines. Default is dashed ('--').
+       linewidth : float, optional
+           Line width for gridlines. Default is 0.5.
+       """
         self.ax.grid(visible, which=which, axis=axis, linestyle=linestyle, linewidth=linewidth)
     def save_plot(self, filename, dpi = 300):
+        """
+       Save the current plot to a file.
+
+       Parameters
+       ----------
+       filename : str
+           File path (including extension, e.g. '.png' or '.pdf') to save the plot.
+       dpi : int, optional
+           Resolution of the saved figure in dots per inch. Default is 300.
+       """
         self.fig.savefig(filename,dpi = dpi, bbox_inches='tight', pad_inches=0.1)
     def refresh(self, legend_loc='best'):
+        """
+        Refresh the plot for live updates during interactive plotting.
+
+        This method re-renders the plot in real-time, useful when updating plots.
+
+        Parameters
+        ----------
+        legend_loc : str, optional
+            Location of the legend. Default is 'best'.
+        """
         plt.ion()  # Ensure interactive mode is on
         plt.figure(self.fig.number)  # Reactivate the figure
         handles, labels = self.ax.get_legend_handles_labels()
@@ -92,14 +197,107 @@ class Plotter:
         self.fig.canvas.flush_events()  # Ensure updates are shown
 
 class LinePlotter(Plotter):
+    """
+    A simple line plotting class extending the base Plotter.
+
+    The `LinePlotter` class provides an easy interface to plot one or more
+    continuous data series with automatic labeling and color management.
+
+    Inherits from
+    --------------
+    Plotter
+
+    Methods
+    -------
+    add_data(x, y, label="Line", color="blue")
+        Add a new line to the plot with the given data, label, and color.
+    """
     def add_data(self, x, y, label="Line", color="blue"):
+        """
+        Add a line to the plot.
+
+        Parameters
+        ----------
+        x : array-like
+            Sequence of X-axis values.
+        y : array-like
+            Sequence of Y-axis values corresponding to `x`.
+        label : str, optional
+            Label for the plotted line (used in legend). Default is "Line".
+        color : str, optional
+            Color of the line. Default is "blue".
+        """
         self.ax.plot(x, y, label=label, color=color)
 
 class ScatterPlotter(Plotter):
+    """
+    A scatter plotting class extending the base Plotter.
+
+    The `ScatterPlotter` class is used for plotting discrete data points
+    as scatter plots, with optional labeling and coloring.
+
+    Inherits from
+    --------------
+    Plotter
+
+    Methods
+    -------
+    add_data(x, y, label="Scatter", color="green")
+        Add a scatter data series to the plot.
+    """
     def add_data(self, x, y, label="Scatter", color="green"):
+        """
+        Add a scatter dataset to the plot.
+
+        Parameters
+        ----------
+        x : array-like
+            X-axis values of points.
+        y : array-like
+            Y-axis values of points.
+        label : str, optional
+            Label for the scatter plot in the legend. Default is "Scatter".
+        color : str, optional
+            Marker color. Default is "green".
+        """
         self.ax.scatter(x, y, label=label, color=color)
 
 class HueBoxPlotter:
+    """
+    Create grouped boxplots with hue categories and jittered data points.
+
+    The `HueBoxPlotter` supports visualization of data grouped by two categorical
+    variables: a "group" and a "hue" (subgroup/condition). Each group can have
+    multiple hues displayed side by side for comparison.
+
+    Attributes
+    ----------
+    title : str
+        Title of the box plot.
+    xlabel : str
+        Label for the X-axis.
+    ylabel : str
+        Label for the Y-axis.
+    palette : dict
+        Mapping from hue names to colors. If None, defaults to Matplotlib colors.
+    data : dict
+        Nested dictionary structure {group: {hue: data}}.
+    hues : set
+        Set of hue names added to the plot.
+    groups : list
+        Ordered list of group names.
+    fig : matplotlib.figure.Figure
+        Figure object for the plot.
+    ax : matplotlib.axes.Axes
+        Axes object for the plot.
+
+    Methods
+    -------
+    add_box(group, hue, data)
+        Add a dataset under a specific group and hue.
+    plot()
+        Render the grouped boxplot with hue-based coloring and jittered dots.
+    """
     def __init__(self, title="Box Plot", xlabel="X-axis", ylabel="Y-axis", palette=None):
         self.title = title
         self.xlabel = xlabel
@@ -111,6 +309,18 @@ class HueBoxPlotter:
         self.fig, self.ax = plt.subplots(figsize=(8, 6))
 
     def add_box(self, group, hue, data):
+        """
+        Add a new dataset for a given group and hue.
+
+        Parameters
+        ----------
+        group : str
+            Group/category name.
+        hue : str
+            Subgroup or condition name.
+        data : array-like
+            Numeric data values for this group-hue combination.
+        """
         if group not in self.data:
             self.data[group] = {}
             self.groups.append(group)
@@ -118,6 +328,19 @@ class HueBoxPlotter:
         self.hues.add(hue)
 
     def plot(self):
+        """
+       Generate the grouped boxplot with optional hue-based color coding.
+
+       This method:
+           1. Calculates box positions for each group-hue combination.
+           2. Draws boxplots and jittered data points.
+           3. Adds group labels and a hue legend.
+
+       Notes
+       -----
+       - Automatically handles spacing between groups and hues.
+       - Colors are taken from `palette` or Matplotlib’s default color cycle.
+       """
         positions = []
         box_data = []
         box_colors = []
@@ -166,11 +389,44 @@ class HueBoxPlotter:
         plt.show()
 
 class BoxPlotter(Plotter):
+    """
+    A simple box plot class for visualizing distributions across multiple groups.
+
+    Inherits from
+    --------------
+    Plotter
+
+    Attributes
+    ----------
+    data : list of array-like
+        List of datasets, one per group.
+    labels : list of str
+        Labels corresponding to each dataset.
+
+    Methods
+    -------
+    add_box(data, label=None)
+        Add a new dataset and draw its box plot.
+    add_jittered_dots()
+        Overlay random scatter points to show individual data distribution.
+    add_statistical_annotations()
+        Perform t-tests between groups and annotate significance levels.
+    """
     def __init__(self, title="Box Plot", xlabel="X-axis", ylabel="Y-axis"):
         super().__init__(title, xlabel, ylabel)
         self.data = []
         self.labels = []
     def add_box(self, data, label=None):
+        """
+        Add a dataset as a box to the plot.
+
+        Parameters
+        ----------
+        data : array-like
+            Numeric data values for the new group.
+        label : str, optional
+            Group label for the dataset. If None, auto-named as "Group N".
+        """
         self.data.append(data)
         if label:
             self.labels.append(label)
@@ -181,10 +437,26 @@ class BoxPlotter(Plotter):
         self.set_labels()
         self.add_jittered_dots()
     def add_jittered_dots(self):
+        """
+        Overlay jittered scatter points on top of boxplots.
+
+        Adds random X-axis noise to display individual data points, providing
+        a visual indication of data distribution within each group.
+        """
         for i, data in enumerate(self.data):
             x = np.random.normal(i + 1, 0.04, size=len(data))
             self.ax.plot(x, data, 'r.', alpha=0.5)
     def add_statistical_annotations(self):
+        """
+        Perform pairwise t-tests between all boxplot groups and annotate results.
+
+        Adds horizontal bars and p-value text labels between group pairs.
+
+        Notes
+        -----
+        - Uses independent two-sample t-tests from `scipy.stats.ttest_ind`.
+        - P-values are displayed in scientific notation (e.g., 1.23e-04).
+        """
         num_groups = len(self.data)
         y_max = max([max(group) for group in self.data])
         y_min = min([min(group) for group in self.data])
@@ -200,23 +472,105 @@ class BoxPlotter(Plotter):
                 self.ax.text((x1 + x2) * 0.5, y + y_offset, f"p = {p_val:.3e}", ha='center', va='bottom')
 
 class HistogramPlotter(Plotter):
+    """
+    A class for creating histograms with optional density normalization.
+
+    Inherits from
+    --------------
+    Plotter
+
+    Attributes
+    ----------
+    density : bool
+        Whether to normalize histogram heights to form a probability density.
+    colors : list of str
+        Matplotlib default color cycle used for sequential datasets.
+    color_index : int
+        Index of the next color to use.
+
+    Methods
+    -------
+    add_data(data, bins=50, label="Histogram", alpha=0.5)
+        Add a histogram for a dataset to the plot.
+    """
     def __init__(self, density = False, title="Histogram", xlabel="X-axis", ylabel="Y-axis", figsize=(6.4, 4.8)):
         super().__init__(xlabel=xlabel, ylabel=ylabel, figsize=figsize)
         self.colors = plt.rcParams['axes.prop_cycle'].by_key()['color']  # default matplotlib colors
         self.color_index = 0
         self.density = density
     def add_data(self, data, bins=50, label="Histogram", alpha=0.5):
+        """
+       Add a histogram to the plot.
+
+       Parameters
+       ----------
+       data : array-like
+           Numeric dataset to be visualized.
+       bins : int, optional
+           Number of histogram bins. Default is 50.
+       label : str, optional
+           Label for the dataset (used in legend). Default is "Histogram".
+       alpha : float, optional
+           Transparency level of the bars. Default is 0.5.
+       """
         color = self.colors[self.color_index % len(self.colors)]
         self.color_index += 1
         self.ax.hist(data, density = self.density,  bins=bins, label=label, color=color, alpha=alpha)
 
 class TrackPlotter(Plotter):
+    """
+   A specialized plotter for visualizing particle or molecule trajectories on image projections.
+
+   The `TrackPlotter` class extends the base `Plotter` to display super-resolution
+   or microscopy data as maximum-intensity projections with overlaid localization
+   or tracking results. Tracks are plotted in nanometers, optionally cropped to a
+   defined region of interest (ROI).
+
+   Inherits from
+   --------------
+   Plotter
+
+   Attributes
+   ----------
+   image : numpy.ndarray
+       3D image stack (frames × height × width) from which a maximum projection is derived.
+   px2nm : float
+       Conversion factor from pixels to nanometers.
+   fig : matplotlib.figure.Figure
+       Matplotlib figure object inherited from Plotter.
+   ax : matplotlib.axes.Axes
+       Axes object for plotting inherited from Plotter.
+
+   Methods
+   -------
+   show_max_projection(contour=None)
+       Display the maximum intensity projection of the 3D image, optionally cropped by a contour.
+   plot_tracks(df, tid, id_col='track.id', x_col='x', y_col='y', color='blue', offset=(0, 0))
+       Overlay an individual track on the current image.
+   save_plot(filename, dpi=300)
+       Save the resulting plot to a file.
+   """
     def __init__(self, image, px2nm=108, title="Track Plot", xlabel="X (nm)", ylabel="Y (nm)", figsize = (6.4, 6.4)):
         super().__init__(title, xlabel, ylabel, figsize)
         self.image = image
         self.px2nm = px2nm
         self.ax.set_aspect('equal')
     def show_max_projection(self, contour=None):
+        """
+        Display the maximum intensity projection of the image stack.
+
+        Parameters
+        ----------
+        contour : numpy.ndarray, optional
+            2D array of (x, y) coordinates defining a polygonal ROI contour.
+            If provided, the projection is cropped to this region.
+
+        Returns
+        -------
+        tuple of int
+            (x_offset, y_offset) representing the crop origin. Returns (0, 0)
+            if no contour is provided.
+        """
         img = np.max(self.image, axis=0)
         if contour is not None:
             x0, x1 = int(min(contour[:, 0])), int(max(contour[:, 0]))
@@ -225,14 +579,98 @@ class TrackPlotter(Plotter):
         self.ax.imshow(img, cmap='gray')
         return (x0 if contour is not None else 0), (y0 if contour is not None else 0)
     def plot_tracks(self, df, tid, id_col='track.id', x_col='x', y_col='y', color='blue', offset=(0, 0)):
+        """
+        Plot a single trajectory on top of the displayed image.
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            DataFrame containing track data.
+        tid : int or str
+            Track identifier corresponding to `id_col` values.
+        id_col : str, optional
+            Column name for track IDs. Default is 'track.id'.
+        x_col : str, optional
+            Column name for X coordinates. Default is 'x'.
+        y_col : str, optional
+            Column name for Y coordinates. Default is 'y'.
+        color : str, optional
+            Color for the plotted trajectory line. Default is "blue".
+        offset : tuple of float, optional
+            (x_offset, y_offset) to shift coordinates (useful when plotting cropped images).
+        """
         track = df[df[id_col] == tid]
         self.ax.plot(track[x_col]/self.px2nm - offset[0], track[y_col]/self.px2nm - offset[1], color=color)
         self.ax.grid(False)
         self.ax.axis('off')
     def save_plot(self, filename, dpi = 300):
+        """
+        Save the current track plot to a file.
+
+        Parameters
+        ----------
+        filename : str
+            Path to save the figure (e.g., 'output/track_plot.png').
+        dpi : int, optional
+            Dots per inch (image resolution). Default is 300.
+        """
         self.fig.savefig(filename,dpi = dpi, bbox_inches='tight', pad_inches=0)
 
 class Tracked_image:
+    """
+   Analysis tool for tracked particle or molecule images.
+
+   This class encapsulates single- or dual-channel imaging data along with
+   tracking results, colocalization data, and derived statistics. It provides
+   methods to visualize tracks, colocalizations, intensity over time, and
+   to extract diffusion coefficients or dwell times for further analysis.
+
+   Attributes
+   ----------
+   ch0 : TiffMultiMap
+       Image stack for channel 0.
+   tracks0 : pandas.DataFrame
+       Tracks data for channel 0.
+   stats0 : pandas.DataFrame
+       Track statistics for channel 0.
+   ch1 : TiffMultiMap, optional
+       Image stack for channel 1 (if dual-channel data).
+   tracks1 : pandas.DataFrame, optional
+       Tracks data for channel 1.
+   stats1 : pandas.DataFrame, optional
+       Track statistics for channel 1.
+   coloc_tracks : pandas.DataFrame, optional
+       Colocalized tracks across channels.
+   coloc_stats : pandas.DataFrame, optional
+       Statistics for colocalized tracks.
+   nm2px : float
+       Conversion factor from nanometers to pixels.
+   folder : str, optional
+       Path to the folder containing image and tracking data.
+   result_cluster_analysis : dict
+       Placeholder for clustering results per channel.
+   summary_cluster_analysis : dict
+       Summary of clustering results per channel.
+   linked_clusters : dict
+       Linked clusters per channel.
+   linked_clusters_stats : dict
+       Statistics of linked clusters per channel.
+   tracks_outside_clusters : dict
+       Tracks not associated with any clusters.
+
+   Methods
+   -------
+   plot_tracks(to_check, channel='ch0')
+       Plot selected tracks for the specified channel.
+   plot_colocs(to_check)
+       Plot colocalized tracks across channels.
+   intensity_coloc(to_check, legend_loc='best', legend_0='ch0', legend_1='ch1')
+       Plot intensity of colocalizing tracks over time.
+   extract_Ds(min_len=10, channel='ch0')
+       Extract diffusion coefficients (D_msd) for tracks above a minimum length.
+   extract_dwell(frame_rate=1, min_len=10, max_dist=250, ref='ch0')
+       Compute dwell times for colocalized tracks based on distance thresholds.
+   """
     def __init__(self, ch0, tracks0, stats0, ch1=None, tracks1=None, stats1=None, coloc_tracks=None, coloc_stats=None, nm2px=108, folder = None):
         #checking data types
         assert isinstance(ch0, TiffMultiMap), "'ch0' must be a picasso.io.TiffMultiMap object"
@@ -267,6 +705,21 @@ class Tracked_image:
         self.linked_clusters_stats = {'ch0' : None, 'ch1' : None}
         self.tracks_outside_clusters = {'ch0' : None, 'ch1' : None}
     def plot_tracks(self, to_check, channel='ch0'):
+        """
+        Plot selected tracks on top of the maximum-intensity projection.
+
+        Parameters
+        ----------
+        to_check : list or array-like
+            List of track IDs to display.
+        channel : str, optional
+            Channel to plot ('ch0' or 'ch1'). Default is 'ch0'.
+
+        Returns
+        -------
+        TrackPlotter
+            A TrackPlotter object with the plotted tracks.
+        """
         if channel == 'ch0':
             image = self.ch0
             tracks = self.tracks0
@@ -297,6 +750,19 @@ class Tracked_image:
         plotter.show_plot()
         return plotter   
     def plot_colocs(self, to_check):
+        """
+        Plot colocalized tracks for given colocalization IDs.
+
+        Parameters
+        ----------
+        to_check : list or array-like
+            List of colocalization IDs to display.
+
+        Returns
+        -------
+        TrackPlotter
+            A TrackPlotter object with the plotted colocalized tracks.
+        """
         assert self.coloc_tracks is not None, "coloc_tracks is not provided."
         assert self.coloc_stats is not None, "coloc_stats is not provided."
     
@@ -316,11 +782,25 @@ class Tracked_image:
         return plotter
     def intensity_coloc(self, to_check, legend_loc = 'best', legend_0 = 'ch0', legend_1 = 'ch1'):
         """
-        Creates a plot of the intensity of two colocalizing tracks over time, with vertical dash lines indicating where they start and stop colocalizing.
-        Only usable with coloc_tracks pipeline.
+        Plot the intensity of colocalizing tracks over time.
 
-        Parameters:
-            to_check (int): colocID of the track to plot.
+        Vertical dashed lines indicate the period of colocalization.
+
+        Parameters
+        ----------
+        to_check : int
+            ColocID of the track to plot.
+        legend_loc : str, optional
+            Location of the legend. Default is 'best'.
+        legend_0 : str, optional
+            Legend label for channel 0. Default is 'ch0'.
+        legend_1 : str, optional
+            Legend label for channel 1. Default is 'ch1'.
+
+        Returns
+        -------
+        LinePlotter
+            A LinePlotter object with the intensity curves plotted.
         """
         assert self.coloc_tracks is not None, "coloc_tracks is not provided."
         assert self.ch1 is not None, "ch1 is not provided."
@@ -352,6 +832,21 @@ class Tracked_image:
         plotter.show_plot(legend_loc= legend_loc)
         return plotter
     def extract_Ds(self, min_len=10, channel='ch0'):
+        """
+        Extract diffusion coefficients (D_msd) for tracks longer than a minimum length.
+
+        Parameters
+        ----------
+        min_len : int, optional
+            Minimum track length to include. Default is 10.
+        channel : str, optional
+            Channel to extract from ('ch0' or 'ch1'). Default is 'ch0'.
+
+        Returns
+        -------
+        pandas.DataFrame
+            DataFrame with columns ['track.id', 'cell_id', 'D_msd'] for qualifying tracks.
+        """
         if channel == 'ch0':
             stats = self.stats0
         elif channel == 'ch1':
@@ -368,6 +863,26 @@ class Tracked_image:
         ds = ds.dropna(subset=['D_msd'])
         return ds
     def extract_dwell(self, frame_rate = 1, min_len=10, max_dist = 250, ref='ch0'):
+        """
+       Compute dwell times for colocalized tracks.
+
+       Parameters
+       ----------
+       frame_rate : float, optional
+           Frame interval in seconds. Default is 1.
+       min_len : int, optional
+           Minimum number of frames for a track to be considered. Default is 10.
+       max_dist : float, optional
+           Maximum distance (nm) to count as colocalized. Default is 250.
+       ref : str, optional
+           Reference channel to compute dwell time ('ch0' or 'ch1'). Default is 'ch0'.
+
+       Returns
+       -------
+       pandas.DataFrame or None
+           DataFrame containing columns ['colocID', 'track.id_ref', 'track.id_binds', 'cell_id', 'dwell_time'] 
+           for qualifying colocalizations, or None if no valid data is available.
+       """
         stats = self.coloc_stats
         tracks = self.coloc_tracks
         if all(isinstance(obj, pd.DataFrame) for obj in [stats, tracks]):
@@ -399,6 +914,48 @@ class Tracked_image:
             return None
   
 class Cell_Analyzer:
+    """
+    A class for analyzing protein clusters and cell maturation from multi-channel time-lapse TIRF microscopy images.
+
+    This class handles:
+        - Loading multi-wavelength image sequences from a folder.
+        - Cropping images per cell based on ROI files.
+        - Thresholding, cluster detection, and cluster feature extraction.
+        - Tracking clusters over time and summarizing per-cell statistics.
+        - Predicting cell maturation probability using a pre-trained model.
+        - Saving cluster and maturation results, including videos and plots.
+
+    Attributes
+    ----------
+    folder : str
+        Path to the experiment folder containing images and ROI files.
+    ch0_wl : str
+        Wavelength for channel 0 (e.g., '405nm').
+    ch1_wl : str
+        Wavelength for channel 1 (e.g., '488nm').
+    images : dict
+        Dictionary mapping wavelength strings to 3D image stacks (frames, height, width).
+    channels : list
+        List of available wavelength channels.
+    sep_cells : dict
+        Dictionary mapping cell IDs to cropped images per channel.
+    contours : dict
+        Dictionary mapping cell IDs to cell contour coordinates.
+    centroids : dict
+        Dictionary mapping cell IDs to cell centroid coordinates.
+    clusters_binary : dict
+        Binary cluster masks per cell per channel.
+    result_cluster_analysis : dict
+        Detailed cluster measurements (DataFrame) per channel.
+    summary_cluster_analysis : dict
+        Summary statistics per channel.
+    linked_clusters : dict
+        Cluster tracks (DataFrame) per channel.
+    linked_clusters_stats : dict
+        Track-level summary statistics per channel.
+    maturation : dict
+        Predicted maturation per cell per channel.
+    """
     def __init__(self, folder, ch0_wl=None, ch1_wl=None):
         self.folder = folder 
         self.nm2px = self._get_nm2px()
@@ -486,6 +1043,19 @@ class Cell_Analyzer:
                     self.maturation[ch] = pd.DataFrame(json.load(f))
 
     def _get_nm2px(self):
+        """
+        Get nanometers-per-pixel scaling factor from result.txt.
+
+        Returns
+        -------
+        float
+            Nanometers per pixel.
+
+        Raises
+        ------
+        ValueError
+            If the microscope source is unknown.
+        """
         resultPath  = glob(self.folder + '/**/*result.txt', recursive=True)[0]
         result_txt  = tools.read_result_file(resultPath)
         if result_txt['Computer'] == 'ANNAPURNA': 
@@ -494,7 +1064,47 @@ class Cell_Analyzer:
             return 108
         else:
             raise ValueError(f"Unknown microscope source: {result_txt['Computer']}")
+    def get_time_interval(self):
+        """
+        Retrieve the time interval (dt) between frames from result.txt.
+
+        Returns
+        -------
+        float
+            Time interval in seconds.
+
+        Raises
+        ------
+        FileNotFoundError
+            If no result.txt file is found in the folder.
+        """
+        # Extract dt (frame interval) from result.txt
+        result_files = glob(os.path.join(self.folder, "*result.txt"))
+        if not result_files:
+            raise FileNotFoundError("No result.txt file found in the folder.")
+        with open(result_files[0], 'r') as f:
+            resultLines = f.readlines()
+    
+        if tools.find_string(resultLines, 'Interval'): 
+            interval = tools.find_string(resultLines, 'Interval').split(":")[-1].strip()
+            if interval.split(" ")[-1] == 'sec':
+                dt = 1.0 * float(interval.split(" ")[0])
+            elif interval.split(" ")[-1] == 'ms':
+                dt = 0.001 * float(interval.split(" ")[0])
+        else:
+            dtStr = tools.find_string(resultLines, 'Camera Exposure')[17:-1]
+            dt = 0.001 * float((''.join(c for c in dtStr if (c.isdigit() or c == '.'))))
+        return dt
+            
     def split_cells(self):
+        """
+       Crop images per cell based on ROI files and store contours and centroids.
+
+       Raises
+       ------
+       RuntimeError
+           If no ROI files are found in the folder.
+       """
         roi_contours = {}
         roi_centroids = {}
         rois = natsorted(glob(os.path.join(self.folder, "*.roi")))
@@ -529,12 +1139,41 @@ class Cell_Analyzer:
     def analyze_clusters_protein(self, min_size=80, ch='ch0', th_method='li_local', global_th_mode='max',
                              window_size=15, p=2, q=6, save_videos=False, overwrite = False):
         """
-        Analyze protein clusters per cell by thresholding and tracking features across frames.
-    
-        Returns:
-            clusters_binary : dict of 3D np.array
-            result : pd.DataFrame
-            linked_df : pd.DataFrame
+        Detect and analyze protein clusters per cell using thresholding and tracking.
+
+        Parameters
+        ----------
+        min_size : int, optional
+            Minimum cluster size in pixels to include (default=80).
+        ch : str, optional
+            Channel to analyze: 'ch0', 'ch1', or specific wavelength key (default='ch0').
+        th_method : str, optional
+            Thresholding method: 'li_local', 'otsu_local', etc. (default='li_local').
+        global_th_mode : str, optional
+            Mode for global threshold: 'max', 'full', 'median', 'last' (default='max').
+        window_size : int, optional
+            Window size for local thresholding (default=15).
+        p : float, optional
+            Phansalkar parameter 1 (default=2).
+        q : float, optional
+            Phansalkar parameter 2 (default=6).
+        save_videos : bool, optional
+            Whether to save centroid overlay videos (default=False).
+        overwrite : bool, optional
+            Overwrite existing results if present (default=False).
+
+        Returns
+        -------
+        clusters_binary : dict
+            Binary masks of clusters per cell.
+        result : pd.DataFrame
+            Detailed measurements per cluster.
+        results_stats : pd.DataFrame
+            Summary statistics per cell per frame.
+        linked_df : pd.DataFrame
+            Tracked cluster DataFrame.
+        linked_stats : pd.DataFrame
+            Summary statistics per track.
         """
         clusters_binary = {}
         all_props = []
@@ -708,6 +1347,36 @@ class Cell_Analyzer:
         return clusters_binary, result, results_stats, linked_df, linked_stats
     def predict_maturation(self, model, preprocess_frame_func = None, save_plot = False, 
                            N_rolling = 5, ch = 'ch0', r2_thresh = 0.75, low_thresh=0.4, high_thresh=0.6, overwrite = False):
+        """
+        Predict cell maturation using a deep learning model and optionally plot results.
+
+        Parameters
+        ----------
+        model : tf.keras.Model
+            Pre-trained model to predict maturation probability.
+        preprocess_frame_func : callable, optional
+            Function to preprocess a single frame for model input. If none is given a default one is used. 
+        save_plot : bool, optional
+            Save probability and sigmoid fit plots for each cell (default=False).
+        N_rolling : int, optional
+            Rolling window for probability smoothing (default=5).
+        ch : str, optional
+            Channel to analyze: 'ch0', 'ch1', or specific wavelength key (default='ch0').
+        r2_thresh : float, optional
+            Minimum R² value for sigmoid fit to be considered valid (default=0.75).
+        low_thresh : float, optional
+            Lower threshold for maturation probability classification (default=0.4).
+        high_thresh : float, optional
+            Upper threshold for maturation probability classification (default=0.6).
+        overwrite : bool, optional
+            Overwrite existing maturation results if present (default=False).
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame containing predicted probabilities, sigmoid fit parameters,
+            classification category, crossing frame, and features per cell.
+        """
         # map channel string to actual wavelength key
         if ch == 'ch0':
             wl = self.ch0_wl
@@ -845,9 +1514,45 @@ class Cell_Analyzer:
         self.maturation[wl] = results_df
         return results_df
     def _sigmoid(self, x, L, x0, k, b):
+        """
+            Sigmoid function for fitting maturation probabilities.
+        
+            Parameters
+            ----------
+            x : array-like
+                Input values (frame indices).
+            L : float
+                Maximum value of the sigmoid.
+            x0 : float
+                Sigmoid midpoint.
+            k : float
+                Steepness of the curve.
+            b : float
+                Baseline offset.
+        
+            Returns
+            -------
+            array-like
+                Sigmoid-transformed values corresponding to `x`.
+    """
         z = np.clip(-k * (x - x0), -500, 500)  # prevent overflow
         return L / (1 + np.exp(z)) + b
     def _preprocess_frame(self, frame, target_size=(224, 224)):
+        """
+            Preprocess a single grayscale frame for model input.
+        
+            Parameters
+            ----------
+            frame : np.ndarray
+                2D grayscale image.
+            target_size : tuple, optional
+                Desired output size (height, width), by default (224, 224).
+        
+            Returns
+            -------
+            np.ndarray
+                Preprocessed frame ready for model prediction (shape: 1xHxWx3).
+    """
         # frame: 2D grayscale
         frame = frame.astype(np.float32) / 4095.0   # normalize like during training
         frame = np.expand_dims(frame, axis=-1)      # HxWx1
@@ -858,28 +1563,32 @@ class Cell_Analyzer:
     def _classify_maturation(self, prob, fit = None, fit_success = False, r2_thresh = 0.75, smooth_window=5, 
                             low_thresh=0.4, high_thresh=0.6):
         """
-        Classifies a cell maturation probability curve into 4 categories:
-        1. Never matures
-        2. Matures over time
-        3. Starts mature
-        4. Not classifiable
-        
-        Parameters
-        ----------
-        probabilities : np.ndarray
-            1D array of probabilities per frame (0-1 range).
-        smooth_window : int
-            Rolling average window size. Turns to 1 if fit is used instead of raw probabilities
-        low_thresh, high_thresh : float
-            Probability thresholds for classification.
+    Classify a cell's maturation probability curve into categories.
 
-        Returns
-        -------
-        category : int
-            Classification label: 0: never matures, 1: matures over time, 2: starts mature, 3: not classifiable.
-        features : dict
-            Key metrics extracted from the curve.
-        """
+    Parameters
+    ----------
+    prob : np.ndarray
+        Probability values per frame (0-1).
+    fit : np.ndarray, optional
+        Sigmoid fit of probabilities, by default None.
+    fit_success : bool, optional
+        Whether sigmoid fitting succeeded, by default False.
+    r2_thresh : float, optional
+        Minimum R² for using fit instead of raw probabilities, by default 0.75.
+    smooth_window : int, optional
+        Rolling average window for smoothing, by default 5.
+    low_thresh : float, optional
+        Lower threshold for classification, by default 0.4.
+    high_thresh : float, optional
+        Upper threshold for classification, by default 0.6.
+
+    Returns
+    -------
+    category : int
+        Maturation class (0: never, 1: matures, 2: starts mature, 3: not classifiable).
+    features : dict
+        Extracted metrics such as p_start, p_end, delta, n_crossings, r2, etc.
+    """
         r2 = None
         features = {}
         if fit_success:
@@ -943,6 +1652,23 @@ class Cell_Analyzer:
 
         return category, features
     def _select_frames(self, n_frames, crossing_frame=None, min_gap=15):
+        """
+            Select representative frames for plotting or analysis.
+        
+            Parameters
+            ----------
+            n_frames : int
+                Total number of frames in the video.
+            crossing_frame : int or None, optional
+                Frame where maturation probability crosses 0.5, by default None.
+            min_gap : int, optional
+                Minimum gap from edges to consider crossing_frame, by default 15.
+        
+            Returns
+            -------
+            list
+                Selected frame indices (up to 5 frames).
+    """
         if n_frames < 5:
             # Not enough frames, just return all
             return list(range(n_frames))
@@ -960,6 +1686,23 @@ class Cell_Analyzer:
             # No valid crossing, just pick 5 equally spaced
             return [0, n_frames//4, n_frames//2, 3*n_frames//4, n_frames-1]
     def _li_threshold(self, image, mask, mode = "max"):
+        """
+            Apply Li global threshold to a 2D/3D image stack.
+        
+            Parameters
+            ----------
+            image : np.ndarray
+                Input image stack (frames, height, width) or single frame.
+            mask : np.ndarray
+                Cell mask (not currently applied in global thresholding).
+            mode : str, optional
+                Mode for threshold calculation: 'max', 'full', 'median', 'last', by default "max".
+        
+            Returns
+            -------
+            np.ndarray
+                Binary mask after thresholding and closing.
+    """
         if mode == 'max':
             thresh = threshold_li(np.max(image, axis = 0))
         elif mode == 'full':
@@ -974,6 +1717,25 @@ class Cell_Analyzer:
         global_mask = binary_closing((image > thresh)) #& self._create_mask(image[0].shape, mask))
         return global_mask
     def _otsu_threshold(self, original, image, mask, mode = "max"):
+        """
+            Apply Otsu global threshold to a 2D/3D image stack.
+        
+            Parameters
+            ----------
+            original : np.ndarray
+                Original image stack.
+            image : np.ndarray
+                Image stack to threshold.
+            mask : np.ndarray
+                Cell mask (not currently applied in global thresholding).
+            mode : str, optional
+                Mode for threshold calculation: 'max', 'full', 'median', 'last', by default "max".
+        
+            Returns
+            -------
+            np.ndarray
+                Binary mask after thresholding and closing.
+    """
         if mode == 'max':
             thresh = threshold_otsu(np.max(original, axis = 0))
         elif mode == 'full':
@@ -989,16 +1751,26 @@ class Cell_Analyzer:
         return global_mask
     def _phansalkar_threshold(self, image_stack, radius=15, k=0.25, p=2.0, q=10.0):
         """
-        Phansalkar local thresholding.
-        Can process either a single 2D image or a 3D stack of images.
+            Apply Phansalkar local thresholding per frame.
         
-        Parameters:
-            image_stack: 2D or 3D numpy array (float32, normalized [0,1])
-            radius: int, local window radius
-            k, p, q: floats, Phansalkar parameters
-        Returns:
-            Binary thresholded image or stack of same shape (bool ndarray)
-        """
+            Parameters
+            ----------
+            image_stack : np.ndarray
+                2D or 3D array of images (frames, height, width).
+            radius : int, optional
+                Local window radius, by default 15.
+            k : float, optional
+                Phansalkar parameter k, by default 0.25.
+            p : float, optional
+                Phansalkar parameter p, by default 2.0.
+            q : float, optional
+                Phansalkar parameter q, by default 10.0.
+        
+            Returns
+            -------
+            np.ndarray
+                Binary thresholded image or stack of same shape.
+    """
         window_size = (radius * 2) + 1
 
         def threshold_single(image):
@@ -1020,16 +1792,64 @@ class Cell_Analyzer:
         else:
             raise ValueError("Input must be 2D or 3D numpy array")
     def _remove_small_objects_per_frame(self, stack, min_size=100, connectivity=1):
+        """
+            Remove small objects from each frame of a binary stack.
+        
+            Parameters
+            ----------
+            stack : np.ndarray
+                Binary image stack (frames, height, width).
+            min_size : int, optional
+                Minimum object size in pixels to keep, by default 100.
+            connectivity : int, optional
+                Connectivity for object removal, by default 1.
+        
+            Returns
+            -------
+            np.ndarray
+                Cleaned binary stack.
+    """
         cleaned_stack = np.zeros_like(stack, dtype=bool)
         for i in range(stack.shape[0]):  # assuming frames on axis 0
             cleaned_stack[i] = remove_small_objects(stack[i], min_size=min_size, connectivity=connectivity)
         return cleaned_stack
     def _remove_small_holes_per_frame(self, stack, min_size=100, connectivity=1):
+        """
+            Fill small holes in each frame of a binary stack.
+        
+            Parameters
+            ----------
+            stack : np.ndarray
+                Binary image stack (frames, height, width).
+            min_size : int, optional
+                Maximum hole size in pixels to fill, by default 100.
+            connectivity : int, optional
+                Connectivity for hole filling, by default 1.
+        
+            Returns
+            -------
+            np.ndarray
+                Binary stack with small holes removed.
+    """
         cleaned_stack = np.zeros_like(stack, dtype=bool)
         for i in range(stack.shape[0]):  # assuming frames on axis 0
             cleaned_stack[i] = remove_small_holes(stack[i], area_threshold=min_size, connectivity=connectivity)
         return cleaned_stack
     def _summarize_clusters_per_cell_frame(self, result_df):
+        """
+            Summarize cluster measurements per cell and per frame by averaging and 
+            calculating the std of the different parameters.
+        
+            Parameters
+            ----------
+            result_df : pd.DataFrame
+                Detailed cluster measurements.
+        
+            Returns
+            -------
+            pd.DataFrame
+                Summary statistics per cell per frame.
+        """
         summary_rows = []
 
         for (cell_id, frame), group in result_df.groupby(['cell_id', 'frame']):
@@ -1067,11 +1887,60 @@ class Cell_Analyzer:
 
         return pd.DataFrame(summary_rows) 
     def _weighted_mean(self, x, weights):
+        """
+            Compute a weighted mean if there is any valid value, if not it returns NaN.
+        
+            Parameters
+            ----------
+            x : array-like
+                Data values.
+            weights : array-like
+                Corresponding weights.
+        
+            Returns
+            -------
+            float
+                Weighted mean, or NaN if weights sum to 0.
+            """
         return np.average(x, weights=weights) if len(x) > 0 and np.sum(weights) > 0 else np.nan
     def _safe_std(self, x):
+        """
+            Compute standard deviation if there is any valid value, if not it returns 0.
+        
+            Parameters
+            ----------
+            x : array-like
+                Data values.
+        
+            Returns
+            -------
+            float
+                Standard deviation or 0 if insufficient data.
+    """
         return x.std() if len(x) > 1 else 0
     def _save_centroid_videos_per_cell(self, clusters_binary, all_props, sep_cells, ch='ch0', square_size=3, output_dir='cluster_analysis', filtered_spots=None):
-        # map 'ch0'/'ch1' to actual wavelength, else assume ch is a valid wavelength key
+        
+        """
+            Save videos overlaying cluster centroids on original and binary images.
+        
+            Parameters
+            ----------
+            clusters_binary : dict
+                Binary cluster masks per cell.
+            all_props : pd.DataFrame
+                Cluster properties per cell/frame.
+            sep_cells : dict
+                Cropped images per cell and channel.
+            ch : str, optional
+                Channel to save, by default 'ch0'.
+            square_size : int, optional
+                Size of centroid marker squares, by default 3.
+            output_dir : str, optional
+                Directory to save videos, by default 'cluster_analysis'.
+            filtered_spots : pd.DataFrame, optional
+                Spots to overlay additionally, by default None.
+    """
+        
         if ch == 'ch0':
             wl = self.ch0_wl
         elif ch == 'ch1':
@@ -1135,7 +2004,20 @@ class Cell_Analyzer:
             tifffile.imwrite(bin_path, np.array(bin_stack), photometric='rgb')
             # print(f"Saved Cell {cell_id} to:\n- {orig_path}\n- {bin_path}")
     def _paint_red_square(self, image, center, size=1, color=None):
-        """Paint a red square centered at (row, col) in the RGB image."""
+        """
+    Paint a square on an RGB image at a specified center.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        RGB image.
+    center : tuple
+        (row, col) coordinates of the square center.
+    size : int, optional
+        Size of the square (pixels), by default 1.
+    color : list, optional
+        RGB color values, by default red [255,0,0].
+    """
         if color is None:
             color = [255, 0, 0]  # red
 
@@ -1147,6 +2029,21 @@ class Cell_Analyzer:
         c_end = min(c + half + 1, image.shape[1])
         image[r_start:r_end, c_start:c_end] = color        
     def _create_mask(self, image_shape, contour):
+        """
+            Create a binary mask from a polygon contour.
+        
+            Parameters
+            ----------
+            image_shape : tuple
+                Shape of the output mask (height, width).
+            contour : np.ndarray
+                Nx2 array of polygon coordinates.
+        
+            Returns
+            -------
+            np.ndarray
+                Boolean mask of the polygon.
+    """
         mask = np.zeros(image_shape, dtype=bool)
         rr, cc = polygon(contour[:, 1], contour[:, 0], image_shape)
         mask[rr, cc] = True
@@ -1365,11 +2262,42 @@ class Cell_Analyzer:
     
         return linked_df
 class Single_tracked_folder:
+    """
+    Class to handle tracked images and associated data in a single folder.
+
+    This class provides functionality to:
+    - Load tracked movies, track CSVs, and statistics HDF files.
+    - Handle single-channel or dual-channel tracked datasets.
+    - Validate the presence of tracked images and colocalized tracks.
+    - Retrieve pixel-to-nanometer conversion based on the microscope.
+
+    Attributes
+    ----------
+    folder : str
+        Path to the folder containing tracked movies and associated files.
+    ch0_hint : str or None
+        Optional hint for the channel 0 laser wavelength (used if no YAML file is present).
+    ch1_hint : str or None
+        Optional hint for the channel 1 laser wavelength (used if no YAML file is present).
+    """
     def __init__(self, folder, ch0_hint = None, ch1_hint = None):
         self.folder = folder
         self.ch0_hint = ch0_hint
         self.ch1_hint = ch1_hint
     def open_files(self):
+        """
+            Open tracked image files and associated data from the folder.
+        
+            This method supports three cases:
+            1. A coloc YAML file is present, specifying ch0 and ch1 lasers.
+            2. Two CSV files are found without coloc YAML (requires `ch0_hint` and `ch1_hint`).
+            3. A single CSV file is found without coloc YAML.
+        
+            Returns
+            -------
+            Tracked_image
+                An instance of Tracked_image containing the loaded movie(s), track data, and statistics.
+    """
         yaml_file = self._openyaml()
         if yaml_file:
             ch0_laser = yaml_file['ch0']
@@ -1438,8 +2366,19 @@ class Single_tracked_folder:
         else: 
             print('No tracking data available')          
     def validate(self):
-        # ch0, tracks0, stats0, ch1=None, tracks1=None, stats1=None, coloc_tracks=None, coloc_stats=None, px2nm=108
-            # print(f'Data has been tracked with the colocalizing tracks algorithm and the reference channel was {ch0_laser}')
+        """
+            Validate the contents of the folder by listing images and tracking files.
+        
+            Prints information about:
+            - Available TIFF image files.
+            - Tracking CSV files.
+            - Colocalized track files, if any.
+        
+            Notes
+            -----
+            If colocalized tracks exist, it attempts to read the YAML file to report
+            the reference channel used.
+    """
         tifs = glob(self.folder + '/**/**nm.tif', recursive=True)
         csvs = glob(self.folder + '/**/**_locs_nm_trackpy.csv', recursive=True)
         coloc_tracks = glob(self.folder + '/**/**_colocsTracks.csv', recursive=True)
@@ -1477,6 +2416,43 @@ class Single_tracked_folder:
             return 108
 
 class Combined_analysis:
+    """
+        Class for combined analysis of tracked spots and clusters in microscopy images.
+        
+        This class integrates tracked particle data with cluster analysis results,
+        allowing users to:
+        - Combine single-molecule spots with cluster ROIs.
+        - Remove spots within clusters.
+        - Compute mean intensities of spots outside clusters.
+        - Retrack spots after excluding the ones inside clusters using Trackpy.
+        - Re-colocalize tracks for dual-channel analysis.
+        - Extract filtered diffusion coefficients (D) and dwell times for specific cell maturation behaviour.
+        
+        Attributes
+        ----------
+        folder : str
+            Path to the folder containing the tracked images and cluster analysis data.
+        tracked_folder : Single_tracked_folder
+            Instance managing the tracked files in the folder.
+        tracked : Tracked_image or None
+            Loaded tracked image data for both channels.
+        clusters : Cell_Analyzer or None
+            Instance containing cluster analysis results.
+        spots_outside_clusters : dict
+            Filtered spots outside clusters, keyed by channel wavelength.
+        cluster_and_spots_stats : dict
+            Statistics merging cluster and spot data, keyed by channel wavelength.
+        tracks_outside_clusters : dict
+            Re-tracked particle data outside clusters, keyed by channel wavelength.
+        tracks_outside_clusters_stats : dict
+            Statistics for re-tracked particles outside clusters.
+        cotracks_outside_clusters : pd.DataFrame or None
+            Co-localized tracks outside clusters (dual-channel only).
+        cotracks_outside_clusters_stats : pd.DataFrame or None
+            Statistics for co-localized tracks outside clusters.
+        nm2px : float
+            Conversion factor from nanometers to pixels.
+    """
     def __init__(self, folder, ch0_hint = None, ch1_hint = None, verbose = True):
         self.folder = folder
         self.tracked_folder = Single_tracked_folder(folder, ch0_hint = ch0_hint, ch1_hint = ch1_hint) # your tracked spots
@@ -1516,14 +2492,24 @@ class Combined_analysis:
             if verbose:
                 print(f"Warning: could not open images or ROIs files: {e}")
             self.clusters = None
-        
-        
-        
+          
     def _load_previous_results(self):
         """
-        Check if cluster/tracking/co-tracking results exist on disk and load them.
-        Also loads previously saved spots_filtered CSVs.
-        """
+            Load previously saved results from disk if they exist.
+        
+            This includes:
+            - Filtered spots outside clusters (CSV)
+            - Cluster and spots statistics (CSV)
+            - Tracks outside clusters (CSV + HDF)
+            - Co-localized tracks outside clusters (CSV + HDF)
+        
+            Notes
+            -----
+            Results are loaded into the corresponding class attributes:
+            `spots_outside_clusters`, `cluster_and_spots_stats`,
+            `tracks_outside_clusters`, `tracks_outside_clusters_stats`,
+            `cotracks_outside_clusters`, and `cotracks_outside_clusters_stats`.
+    """
         cluster_dir = os.path.join(self.folder, "cluster_analysis_spots_filtered")
         
         # Load filtered spots
@@ -1556,6 +2542,52 @@ class Combined_analysis:
 
     def combine_spots_clusters(self, min_size=80, ch='ch0', th_method='li_local',
                            global_th_mode='max', window_size=15, p=2, q=6, save_videos=False, overwrite = False):
+        """
+        Combine tracked spots with cluster analysis and compute spot statistics, it includes:
+                 - checks if clusters have been found by checking if the results have been reloaded. If they are not, 
+                 runs analysze clusters from Cell_Analyzer 
+                 - From the spots found by SPIT, it removes the ones inside a cluster. 
+                 - Calculate the mean intensities of the spots and saves them together in the file with the filtered spots. 
+                 - Clauclates the number of spots, their mean intneisty and the standard deviation and couples it to the 
+                 clusters stats. 
+    
+        Parameters
+        ----------
+        min_size : int, optional
+            Minimum size of clusters to consider, by default 80
+        ch : str, optional
+            Channel to process ('ch0' or 'ch1'), by default 'ch0'
+        th_method : str, optional
+            Local thresholding method, by default 'li_local'
+        global_th_mode : str, optional
+            Global threshold mode for clusters, by default 'max'
+        window_size : int, optional
+            Window size for local thresholding, by default 15
+        p : int, optional
+            Local threshold parameter, by default 2
+        q : int, optional
+            Local threshold parameter, by default 6
+        save_videos : bool, optional
+            Save centroid videos for clusters, by default False
+        overwrite : bool, optional
+            Overwrite existing results, by default False
+    
+        Returns
+        -------
+        tuple
+            clusters_binary : np.ndarray
+                Binary mask of clusters per frame.
+            clusters_frame : pd.DataFrame
+                Cluster labels per frame.
+            results_stats : pd.DataFrame
+                Cluster and spot statistics merged.
+            linked_df : pd.DataFrame
+                Linked clusters per cell.
+            linked_stats : pd.DataFrame
+                Statistics of linked clusters.
+            spots_filtered : pd.DataFrame
+                Spots filtered outside clusters.
+        """
         if ch == 'ch0':
             wl = self.clusters.ch0_wl
         elif ch == 'ch1':
@@ -1667,6 +2699,26 @@ class Combined_analysis:
         
         return clusters_binary, clusters_frame, results_stats, linked_df, linked_stats, spots_filtered
     def remove_spots_within_clusters(self, ch='ch0'):
+        """
+            Remove spots that fall inside clusters for a given channel.
+        
+            Parameters
+            ----------
+            ch : str, optional
+                Channel to process ('ch0' or 'ch1'), by default 'ch0'
+        
+            Returns
+            -------
+            pd.DataFrame
+                DataFrame of spots outside clusters with x/y coordinates converted to pixels.
+        
+            Raises
+            ------
+            RuntimeError
+                If tracked data is missing.
+            ValueError
+                If the channel is invalid.
+    """
         if self.tracked is None:
             raise RuntimeError("Tracked files are missing or tracking failed for this folder. Cannot proceed.")
         if ch == 'ch0':
@@ -1707,7 +2759,20 @@ class Combined_analysis:
 
         return spots_to_save
     def retrack(self, overwrite = False):
-        # Check if any channel has pre-analysis done
+        """
+            Re-link spots outside clusters using Trackpy, and the same settings and method used for SPIT
+        
+            Parameters
+            ----------
+            overwrite : bool, optional
+                If True, recompute tracks even if they exist, by default False
+        
+            Notes
+            -----
+            - Requires `combine_spots_clusters()` to have been run first.
+            - Updates `tracks_outside_clusters` and `tracks_outside_clusters_stats`.
+            - Tracks are only kept if they have more than one localization.
+        """
         try:
             if not any(v is not None for v in self.spots_outside_clusters.values()):
                 raise RuntimeError(
@@ -1827,6 +2892,19 @@ class Combined_analysis:
             self.tracks_outside_clusters[ch] = None
             self.tracks_outside_clusters_stats[ch] = None
     def recoloc_tracks(self, overwrite = False):
+            """
+            Perform co-localization analysis on re-tracked spots outside clusters using the same method and settings as SPIT.
+        
+            Parameters
+            ----------
+            overwrite : bool, optional
+                If True, recompute co-localized tracks even if they exist, by default False
+        
+            Notes
+            -----
+            - Requires `retrack()` to have been run first.
+            - Loads co-localization parameters from `_colocsTracks.yaml`.
+            """
         # try:
             results_in_memory = (
                     self.cotracks_outside_clusters is not None and
@@ -1879,6 +2957,28 @@ class Combined_analysis:
         #     self.cotracks_outside_clusters = None
         #     self.cotracks_outside_clusters_stats = None
     def extract_Ds_filtered(self, mature_class = 1, min_len = 10,  ch = 'ch0'):
+        """
+            Extract diffusion coefficients (D_msd) for tracks outside clusters filtered by cell maturation.
+        
+            Parameters
+            ----------
+            mature_class : int, optional
+                Maturation category to filter cells, by default 1
+            min_len : int, optional
+                Minimum track length to include, by default 10
+            ch : str, optional
+                Channel to process ('ch0' or 'ch1'), by default 'ch0'
+        
+            Returns
+            -------
+            pd.DataFrame
+                DataFrame containing columns ['track.id', 'cell_id', 'D_msd'].
+        
+            Raises
+            ------
+            RuntimeError
+                If `retrack()` has not been run or maturation data is missing.
+        """
         if not any(v is not None for v in self.tracks_outside_clusters.values()):
             raise RuntimeError(
                 "You must run retrack() before extract_Ds_filtered()."
@@ -1909,6 +3009,34 @@ class Combined_analysis:
             return ds
     def extract_dwell_filtered(self,mature_class = 1, frame_rate = None, min_len=10, 
                                max_dist = 250, ref='ch0', ch_maturation_selection = 'ch1'):
+        """
+            Extract dwell times of co-localized tracks filtered by cell maturation.
+        
+            Parameters
+            ----------
+            mature_class : int, optional
+                Maturation category to filter cells, by default 1
+            frame_rate : float, optional
+                Frame interval in seconds. If None, read from result.txt, by default None
+            min_len : int, optional
+                Minimum number of frames to include, by default 10
+            max_dist : float, optional
+                Maximum distance in nm to consider co-localized, by default 250
+            ref : str, optional
+                Reference channel for dwell time calculation ('ch0' or 'ch1'), by default 'ch0'
+            ch_maturation_selection : str, optional
+                Channel used to select maturation classes, by default 'ch1'
+        
+            Returns
+            -------
+            pd.DataFrame
+                DataFrame with columns ['colocID', 'track.id_ref', 'track.id_binds', 'cell_id', 'dwell_time'].
+        
+            Raises
+            ------
+            RuntimeError
+                If `recoloc_tracks()` has not been run or maturation data is missing.
+        """
         if self.cotracks_outside_clusters is None or self.cotracks_outside_clusters_stats is None:
             raise RuntimeError("You must run recoloc_tracks() before extract_dwell_filtered().")
         if not any(v is not None for v in self.clusters.maturation.values()):
@@ -1980,6 +3108,21 @@ class Combined_analysis:
         else:
             return None
     def _filter_spots_outside_clusters(self, spots_df, clusters_df):
+        """
+            Filter spots that fall outside clusters for a given DataFrame of spots.
+        
+            Parameters
+            ----------
+            spots_df : pd.DataFrame
+                DataFrame containing spot coordinates (x_per_cell, y_per_cell) and frame index 't'.
+            clusters_df : pd.DataFrame
+                DataFrame containing cluster contours per frame.
+        
+            Returns
+            -------
+            pd.DataFrame
+                Filtered spots outside clusters.
+        """
         keep_mask = []
 
         for idx, spot in spots_df.iterrows():
@@ -2000,9 +3143,23 @@ class Combined_analysis:
         return filtered_spots
     def _compute_mean_intensity(self, image, x, y, window=1):
         """
-        Compute mean intensity in a (2*window+1)x(2*window+1) patch --> if 1 --> 3x3
-        around (x, y) in a given image.
-        Assumes x, y are in pixel coordinates.
+            Compute mean intensity of a local patch around a spot in an image.
+        
+            Parameters
+            ----------
+            image : np.ndarray
+                2D image array.
+            x : float
+                x-coordinate of the spot (pixels).
+            y : float
+                y-coordinate of the spot (pixels).
+            window : int, optional
+                Half-width of the square patch (total size = 2*window+1), by default 1
+        
+            Returns
+            -------
+            float
+                Mean intensity in the patch. Returns NaN if patch is empty.
         """
         xi, yi = int(round(x)), int(round(y))
         x_min, x_max = max(0, xi - window), min(image.shape[1], xi + window + 1)
@@ -2011,6 +3168,7 @@ class Combined_analysis:
         return np.mean(patch) if patch.size > 0 else np.nan
 
 class Dataset_combined_analysis:
+    
     def __init__(self, folder):
         self.folder = folder
         self.conditions = self._get_conditions()
