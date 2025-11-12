@@ -780,7 +780,7 @@ class Tracked_image:
             plotter.plot_tracks(self.coloc_tracks, i,id_col = 'colocID', x_col='x', y_col='y', color='purple', offset=offset)
         plotter.show_plot()
         return plotter
-    def intensity_coloc(self, to_check, legend_loc = 'best', legend_0 = 'ch0', legend_1 = 'ch1'):
+    def plot_intensity_coloc(self, to_check, legend_loc = 'best', legend_0 = 'ch0', legend_1 = 'ch1'):
         """
         Plot the intensity of colocalizing tracks over time.
 
@@ -831,6 +831,7 @@ class Tracked_image:
         plotter.set_ylim(0)
         plotter.show_plot(legend_loc= legend_loc)
         return plotter
+    
     def extract_Ds(self, min_len=10, channel='ch0'):
         """
         Extract diffusion coefficients (D_msd) for tracks longer than a minimum length.
@@ -3168,7 +3169,48 @@ class Combined_analysis:
         return np.mean(patch) if patch.size > 0 else np.nan
 
 class Dataset_combined_analysis:
-    
+    """
+    High-level manager for batch analysis of multiple experimental conditions and runs.
+
+    The `Dataset_combined_analysis` class automates dataset-level operations
+    on TIRF tracking/imaging experiments. It scans all experimental conditions and their
+    corresponding ``Run#`` subfolders, initializes per-run analyses, and performs
+    processing such as cluster analysis, retracking, colocalization, diffusion coefficient
+    extraction, and dwell time analysis.
+
+    This class serves as a wrapper around lower-level components like
+    `Combined_analysis` and `Tracked_image`, ensuring that
+    all runs within a dataset are processed in a consistent and reproducible manner.
+
+    Parameters
+    ----------
+    folder : str
+        Path to the root dataset directory. The directory must contain one or more
+        subfolders representing experimental conditions. Each condition folder
+        should contain subfolders named ``Run#`` (e.g., ``Run1``, ``Run2``),
+        which store the analysis data for that run.
+
+    Attributes
+    ----------
+    folder : str
+        Path to the root dataset directory.
+    conditions : list of str
+        All condition folder names detected in the dataset.
+    conditions_to_use : list of str
+        Subset of conditions selected for analysis. Defaults to all detected conditions.
+    _conditions_paths : list of str
+        Full paths to each selected condition directory.
+    run_paths : list of str
+        List of full paths to all detected ``Run#`` folders across all selected conditions.
+    failed_folders : list
+        List of tuples ``(path, error, stage)`` describing any failed analyses.
+    result_count : pandas.DataFrame or None
+        Table storing the most recent results from track-counting analyses.
+    ch0_hint : str
+        Wavelength identifier (e.g., ``'488nm'``) for channel 0, parsed from YAML metadata.
+    ch1_hint : str
+        Wavelength identifier (e.g., ``'561nm'``) for channel 1, parsed from YAML metadata.
+    """
     def __init__(self, folder):
         self.folder = folder
         self.conditions = self._get_conditions()
@@ -3334,15 +3376,57 @@ class Dataset_combined_analysis:
     def count_number_cotracks(self,mature_class=1, min_len = 5,
                               ch_maturation_selection = 'ch1', source = 'tracked'):
         """
-        Extract number of tracks and colocalized tracks from tracked or filtered data.
+        Count the number of total and co-localized tracks across all run folders.
+    
+        This method iterates through all experimental conditions and run folders,
+        and depending on the ``source`` parameter, extracts track statistics
+        either from:
         
+        - Raw tracked data (`source='tracked'`), loaded using :class:`Single_tracked_folder`
+        - Filtered data outside clusters (`source='filtered'`)
+        - Filtered and maturation-classified data (`source='filtered_mature'`)
+    
+        It counts:
+        - The number of valid tracks in each fluorescence channel (``ch0`` and ``ch1``)
+        - The number of co-localized tracks across both channels
+    
+        The results are compiled into a DataFrame stored in
+        ``self.result_count`` and also returned.
+    
         Parameters
         ----------
-        source : str
-            One of ["tracked", "filtered", "filtered_mature"].
-        mature_class : int
-            Which maturation category to use (only relevant if source="filtered_mature").
-        """
+        mature_class : int, optional
+            Maturation class to use for filtering cells.
+            Only relevant if ``source='filtered_mature'``.
+            Default is ``1``.
+        min_len : int, optional
+            Minimum number of frames (localizations) a track must have to be counted.
+            Default is ``5``.
+        ch_maturation_selection : str, optional
+            Channel to use for selecting maturation category.
+            Must be one of ``'ch0'`` or ``'ch1'``.
+            Default is ``'ch1'``.
+        source : str, optional
+            Data source to use. One of:
+            
+            - ``'tracked'``: counts from the original tracking results
+            - ``'filtered'``: counts from filtered tracks outside clusters
+            - ``'filtered_mature'``: counts from filtered and maturation-classified tracks
+            
+            Default is ``'tracked'``.
+    
+        Returns
+        -------
+        pandas.DataFrame
+            A DataFrame summarizing per-run and per-condition counts, with the following columns:
+            
+            - ``folder``: str — full path of the run folder  
+            - ``condition``: str — experimental condition name  
+            - ``colocalized_tracks`` : int — number of co-localized tracks  
+            - ``ch0_tracks``: int — number of tracks in channel 0  
+            - ``ch1_tracks``: int — number of tracks in channel 1  
+            - ``min_len_track``: int — minimum track length used for filtering
+    """
         results = []
         for cond_path, cond_name in zip(self._conditions_paths, self.conditions_to_use):
             run_folders = []
@@ -3429,6 +3513,26 @@ class Dataset_combined_analysis:
         self.result_count = pd.DataFrame(results)
         return self.result_count
     def summary_count_number_cotracks(self):
+        """
+        Summarize the total number of tracks and co-localized tracks per condition.
+    
+        This method aggregates the per-run results from `count_number_cotracks`
+        by experimental condition, producing total counts of co-localized and
+        individual channel tracks across all runs belonging to each condition.
+    
+        The method expects that `count_number_cotracks` has already been executed,
+        and that its resulting DataFrame is stored in ``self.result_count``.
+    
+        Returns
+        -------
+        pandas.DataFrame
+            A DataFrame summarizing total track counts per condition, with the following columns:
+            
+            - ``condition`` : str — experimental condition name  
+            - ``total_colocalized_tracks`` : int — total number of co-localized tracks  
+            - ``total_ch0_tracks`` : int — total number of tracks in channel 0  
+            - ``total_ch1_tracks`` : int — total number of tracks in channel 1  
+        """
         if isinstance(self.result_count, pd.DataFrame):
             aggregated_df = self.result_count.groupby('condition').agg(
                 total_colocalized_tracks=pd.NamedAgg(column='colocalized_tracks', aggfunc='sum'),
@@ -3505,6 +3609,54 @@ class Dataset_combined_analysis:
     def get_dwell(self, mature_class = 1, min_len=10, frame_rate = 1, max_dist = 250,  
                   ref='ch0', ch_maturation_selection = 'ch1',
                   source="tracked", x0=0, xt=None, y0=0, yt=None):
+        """
+        Compute and visualize dwell times of co-localized tracks across multiple conditions.
+        
+        This method extracts dwell times (the time one track spends bound to another)
+        from either raw tracked data or filtered datasets, optionally segmented by
+        cell maturation class. It aggregates data across all experimental runs and
+        produces a histogram of dwell time distributions per condition.
+        
+        Parameters
+        ----------
+        mature_class : int, optional
+            Maturation class to analyze (only used if ``source='filtered_mature'``). Default is 1.
+        min_len : int, optional
+            Minimum number of frames a track must persist to be included. Default is 10.
+        frame_rate : float, optional
+            Frame rate (in seconds per frame) used to convert dwell times to seconds.
+            If available, it is automatically determined using :meth:`_get_frame_rate`.
+            Default is 1.
+        max_dist : int, optional
+            Maximum allowed inter-channel distance (in nanometers) to consider tracks
+            as colocalized. Default is 250.
+        ref : {'ch0', 'ch1'}, optional
+            Reference channel used for dwell time measurement. Default is ``'ch0'``.
+        ch_maturation_selection : {'ch0', 'ch1'}, optional
+            Channel used to select maturation category when ``source='filtered_mature'``.
+            Default is ``'ch1'``.
+        source : {'tracked', 'filtered', 'filtered_mature'}, optional
+            Source of data to analyze:
+            
+            - ``'tracked'`` — use directly tracked data  
+            - ``'filtered'`` — use filtered tracks outside clusters  
+            - ``'filtered_mature'`` — use filtered data limited to selected maturation class  
+        
+            Default is ``'tracked'``.
+        x0, xt : float, optional
+            X-axis (time) limits for the dwell time histogram plot. Default is ``0`` and ``None``.
+        y0, yt : float, optional
+            Y-axis (frequency) limits for the dwell time histogram plot. Default is ``0`` and ``None``.
+        
+        Returns
+        -------     
+        - ``final_dwell`` : pandas.DataFrame  
+          Combined dwell time data from all analyzed runs and conditions. Columns include:
+          ``['condition', 'run', 'colocID', 'track.id_ref', 'track.id_binds', 'cell_id', 'dwell_time']``.
+          
+        - ``hist`` : HistogramPlotter  
+          A histogram object visualizing dwell time distributions per condition.
+        """
         all_dwell = []
         try:
             frame_rate = self._get_frame_rate()
@@ -3568,6 +3720,33 @@ class Dataset_combined_analysis:
 
         return final_dwell, hist
     def count_maturation(self, ch = '488nm'):
+        """
+        Collect and summarize maturation classification results across all experimental conditions.
+    
+        This method loads precomputed maturation analysis results from each run folder
+        (stored as JSON files) and aggregates them into a single DataFrame.  
+        Each entry corresponds to a cell and its assigned maturation category.
+    
+        Parameters
+        ----------
+        ch : str, optional
+            The fluorescence channel wavelength (e.g., ``'488nm'`` or ``'561nm'``) used
+            for maturation analysis.  
+            The method looks for JSON files named ``maturation__{ch}.json`` inside each
+            run folder’s ``maturation_analysis`` subdirectory.  
+            Default is ``'488nm'``.
+    
+        Returns
+        -------
+        pandas.DataFrame
+            A combined table of maturation data from all runs and conditions.  
+            Columns include:
+            
+            - ``run`` : Name or identifier of the experimental run  
+            - ``cell`` : Cell identifier  
+            - ``category`` : Maturation category (integer or label, depending on analysis)  
+            - ``condition`` : Experimental condition name
+        """
         result = []
         for cond_path, cond_name in zip(self._conditions_paths, self.conditions_to_use):
             print(f"\nAnalyzing {cond_path}...")
