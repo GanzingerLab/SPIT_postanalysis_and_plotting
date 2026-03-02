@@ -2549,7 +2549,7 @@ class Combined_analysis:
                  runs analysze clusters from Cell_Analyzer 
                  - From the spots found by SPIT, it removes the ones inside a cluster. 
                  - Calculate the mean intensities of the spots and saves them together in the file with the filtered spots. 
-                 - Clauclates the number of spots, their mean intneisty and the standard deviation and couples it to the 
+                 - calculates the number of spots, their mean intensity and the standard deviation and couples it to the 
                  clusters stats. 
     
         Parameters
