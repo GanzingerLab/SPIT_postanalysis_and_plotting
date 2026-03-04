@@ -2906,7 +2906,7 @@ class Combined_analysis:
             - Requires `retrack()` to have been run first.
             - Loads co-localization parameters from `_colocsTracks.yaml`.
             """
-        # try:
+        try:
             results_in_memory = (
                     self.cotracks_outside_clusters is not None and
                         self.cotracks_outside_clusters_stats is not None
@@ -2929,9 +2929,9 @@ class Combined_analysis:
             with open(yaml_file, "r") as f:
                 coloc_settings_all = list(yaml.safe_load_all(f))
             coloc_settings = coloc_settings_all[-1]
+            # Create local aliases for channel-specific filetered tracks made from the filteres spots stored in the object
             df_locs_ch0 = self.tracks_outside_clusters[self.clusters.ch0_wl]
             df_locs_ch1 = self.tracks_outside_clusters[self.clusters.ch1_wl]
-            # print(df_locs_ch0)
             # 2. run coloc analysis
             df_colocs, coloc_stats = coloc.coloc_tracks(
                 df_locs_ch0,
@@ -2954,31 +2954,31 @@ class Combined_analysis:
             coloc_stats.to_hdf(os.path.join(output_dir, f"{self.clusters.ch0_wl}_roi_locs_nm_trackpy_ColocsTracks_stats.hdf"), key = 'df')
             self.cotracks_outside_clusters = df_colocs
             self.cotracks_outside_clusters_stats = coloc_stats
-        # except: 
-        #     self.cotracks_outside_clusters = None
-        #     self.cotracks_outside_clusters_stats = None
+        except: 
+            self.cotracks_outside_clusters = None
+            self.cotracks_outside_clusters_stats = None
     def extract_Ds_filtered(self, mature_class = 1, min_len = 10,  ch = 'ch0'):
         """
-            Extract diffusion coefficients (D_msd) for tracks outside clusters filtered by cell maturation.
-        
-            Parameters
-            ----------
-            mature_class : int, optional
-                Maturation category to filter cells, by default 1
-            min_len : int, optional
-                Minimum track length to include, by default 10
-            ch : str, optional
-                Channel to process ('ch0' or 'ch1'), by default 'ch0'
-        
-            Returns
-            -------
-            pd.DataFrame
-                DataFrame containing columns ['track.id', 'cell_id', 'D_msd'].
-        
-            Raises
-            ------
-            RuntimeError
-                If `retrack()` has not been run or maturation data is missing.
+        Extract diffusion coefficients (D_msd) for tracks outside clusters filtered by cell maturation.
+    
+        Parameters
+        ----------
+        mature_class : int, optional
+            Maturation category to filter cells, by default 1
+        min_len : int, optional
+            Minimum track length to include, by default 10
+        ch : str, optional
+            Channel to process ('ch0' or 'ch1'), by default 'ch0'
+    
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame containing columns ['track.id', 'cell_id', 'D_msd'].
+    
+        Raises
+        ------
+        RuntimeError
+            If `retrack()` has not been run or maturation data is missing.
         """
         if not any(v is not None for v in self.tracks_outside_clusters.values()):
             raise RuntimeError(
