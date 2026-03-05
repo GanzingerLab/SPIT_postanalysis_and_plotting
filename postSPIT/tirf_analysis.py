@@ -617,8 +617,8 @@ class TrackPlotter(Plotter):
         self.fig.savefig(filename,dpi = dpi, bbox_inches='tight', pad_inches=0)
 
 class Tracked_image:
-    """
-   Analysis tool for tracked particle or molecule images.
+   """
+   Analysis tool for single-particle tracked images.
 
    This class encapsulates single- or dual-channel imaging data along with
    tracking results, colocalization data, and derived statistics. It provides
@@ -766,14 +766,19 @@ class Tracked_image:
         assert self.coloc_tracks is not None, "coloc_tracks is not provided."
         assert self.coloc_stats is not None, "coloc_stats is not provided."
     
-        plotter = TrackPlotter(self.ch0, self.nm2px)
+        plotter = TrackPlotter(self.ch0, self.nm2px) #initialize track plotter
         print('Tracks inside ROIs:', self.coloc_stats[self.coloc_stats['colocID'].isin(to_check)]['cell_id'].unique())
         
-        contour = None
+        #get cell contour, if filtere by ROI
+        contour = None 
         if 'contour' in self.coloc_stats.columns and len(self.coloc_stats[self.coloc_stats['colocID'].isin(to_check)]['cell_id'].unique()) == 1:
             contour = self.coloc_stats[self.coloc_stats['colocID'] == to_check[0]]['contour'].values[0]
-        
+        #print max projection of the image (or cropped cell) in the plotter
         offset = plotter.show_max_projection(contour)
+        #add tracks:
+        # - Red: ch0 (reference channel to find colocalizations)
+        # - blue: ch1 
+        # - purple: colocalized track
         for i in to_check:
             plotter.plot_tracks(self.coloc_tracks, i,id_col = 'colocID', x_col='x_0', y_col='y_0', color='red', offset=offset)
             plotter.plot_tracks(self.coloc_tracks, i,id_col = 'colocID', x_col='x_1', y_col='y_1', color='blue', offset=offset)
@@ -817,8 +822,8 @@ class Tracked_image:
             if not np.isnan(row.y_1):
                 track.at[index, 'im_int_1'] = np.mean(self.ch1[row.t, int(row.y_1/self.nm2px)-1:int(row.y_1/self.nm2px)+1, int(row.x_1/self.nm2px)-1:int(row.x_1/self.nm2px)+1]) / np.median(self.ch1[row.t])
 
-        plotter.add_data(track.t * 2, track.im_int_0.rolling(window=1).mean(), label=legend_0, color='blue')
-        plotter.add_data(track.t * 2, track.im_int_1.rolling(window=1).mean(), label=legend_1, color='red')
+        plotter.add_data(track.t * 2, track.im_int_0.rolling(window=1).mean(), label=legend_0, color='red')
+        plotter.add_data(track.t * 2, track.im_int_1.rolling(window=1).mean(), label=legend_1, color='blue')
 
         colocalized_df = track[(track['distance'] <= 300) & pd.notna(track['x']) & pd.notna(track['y'])]
         if not colocalized_df.empty:
@@ -2906,57 +2911,57 @@ class Combined_analysis:
             - Requires `retrack()` to have been run first.
             - Loads co-localization parameters from `_colocsTracks.yaml`.
             """
-        try:
-            results_in_memory = (
-                    self.cotracks_outside_clusters is not None and
-                        self.cotracks_outside_clusters_stats is not None
-                        )
-            if results_in_memory and not overwrite:
-                print('Skipping: recoloc results already loaded in memory.')
-                return
-            
-            
-            if not any(v is not None for v in self.tracks_outside_clusters.values()):
-                raise RuntimeError(
-                    "You must run retrack() before recoloc_tracks()."
+            try:
+                results_in_memory = (
+                        self.cotracks_outside_clusters is not None and
+                            self.cotracks_outside_clusters_stats is not None
+                            )
+                if results_in_memory and not overwrite:
+                    print('Skipping: recoloc results already loaded in memory.')
+                    return
+                
+                
+                if not any(v is not None for v in self.tracks_outside_clusters.values()):
+                    raise RuntimeError(
+                        "You must run retrack() before recoloc_tracks()."
+                    )
+                
+                # 1. load coloc settings from YAML
+                yaml_files = glob(os.path.join(self.folder, "*_colocsTracks.yaml"))
+                if not yaml_files:
+                    raise FileNotFoundError("No *_colocsTracks.yaml found in the folder.")
+                yaml_file = yaml_files[0]
+                with open(yaml_file, "r") as f:
+                    coloc_settings_all = list(yaml.safe_load_all(f))
+                coloc_settings = coloc_settings_all[-1]
+                # Create local aliases for channel-specific filetered tracks made from the filteres spots stored in the object
+                df_locs_ch0 = self.tracks_outside_clusters[self.clusters.ch0_wl]
+                df_locs_ch1 = self.tracks_outside_clusters[self.clusters.ch1_wl]
+                # 2. run coloc analysis
+                df_colocs, coloc_stats = coloc.coloc_tracks(
+                    df_locs_ch0,
+                    df_locs_ch1,
+                    leng=coloc_settings['min_len_track'] ,
+                    max_distance=coloc_settings['th'],
+                    n=coloc_settings['min_overlapped_frames']
                 )
+                # 3. Attach ROI info (if available in stats0)
+                if hasattr(self.tracked, "stats0"):
+                    roi_info = (
+                        self.tracked.stats0[["path", "contour", "area", "centroid", "cell_id"]]
+                        .drop_duplicates(subset=["cell_id"])
+                    )
+                    coloc_stats = coloc_stats.merge(roi_info, on="cell_id", how="left")
             
-            # 1. load coloc settings from YAML
-            yaml_files = glob(os.path.join(self.folder, "*_colocsTracks.yaml"))
-            if not yaml_files:
-                raise FileNotFoundError("No *_colocsTracks.yaml found in the folder.")
-            yaml_file = yaml_files[0]
-            with open(yaml_file, "r") as f:
-                coloc_settings_all = list(yaml.safe_load_all(f))
-            coloc_settings = coloc_settings_all[-1]
-            # Create local aliases for channel-specific filetered tracks made from the filteres spots stored in the object
-            df_locs_ch0 = self.tracks_outside_clusters[self.clusters.ch0_wl]
-            df_locs_ch1 = self.tracks_outside_clusters[self.clusters.ch1_wl]
-            # 2. run coloc analysis
-            df_colocs, coloc_stats = coloc.coloc_tracks(
-                df_locs_ch0,
-                df_locs_ch1,
-                leng=coloc_settings['min_len_track'] ,
-                max_distance=coloc_settings['th'],
-                n=coloc_settings['min_overlapped_frames']
-            )
-            # 3. Attach ROI info (if available in stats0)
-            if hasattr(self.tracked, "stats0"):
-                roi_info = (
-                    self.tracked.stats0[["path", "contour", "area", "centroid", "cell_id"]]
-                    .drop_duplicates(subset=["cell_id"])
-                )
-                coloc_stats = coloc_stats.merge(roi_info, on="cell_id", how="left")
-        
-            # 4. Save results to self and to folder
-            output_dir = os.path.join(self.folder, 'cluster_analysis_spots_filtered')
-            df_colocs.to_csv(os.path.join(output_dir, f"{self.clusters.ch0_wl}_roi_locs_nm_trackpy_ColocsTracks.csv"), index = False)
-            coloc_stats.to_hdf(os.path.join(output_dir, f"{self.clusters.ch0_wl}_roi_locs_nm_trackpy_ColocsTracks_stats.hdf"), key = 'df')
-            self.cotracks_outside_clusters = df_colocs
-            self.cotracks_outside_clusters_stats = coloc_stats
-        except: 
-            self.cotracks_outside_clusters = None
-            self.cotracks_outside_clusters_stats = None
+                # 4. Save results to self and to folder
+                output_dir = os.path.join(self.folder, 'cluster_analysis_spots_filtered')
+                df_colocs.to_csv(os.path.join(output_dir, f"{self.clusters.ch0_wl}_roi_locs_nm_trackpy_ColocsTracks.csv"), index = False)
+                coloc_stats.to_hdf(os.path.join(output_dir, f"{self.clusters.ch0_wl}_roi_locs_nm_trackpy_ColocsTracks_stats.hdf"), key = 'df')
+                self.cotracks_outside_clusters = df_colocs
+                self.cotracks_outside_clusters_stats = coloc_stats
+            except: 
+                self.cotracks_outside_clusters = None
+                self.cotracks_outside_clusters_stats = None
     def extract_Ds_filtered(self, mature_class = 1, min_len = 10,  ch = 'ch0'):
         """
         Extract diffusion coefficients (D_msd) for tracks outside clusters filtered by cell maturation.
