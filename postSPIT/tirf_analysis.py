@@ -617,7 +617,7 @@ class TrackPlotter(Plotter):
         self.fig.savefig(filename,dpi = dpi, bbox_inches='tight', pad_inches=0)
 
 class Tracked_image:
-   """
+    """
    Analysis tool for single-particle tracked images.
 
    This class encapsulates single- or dual-channel imaging data along with
