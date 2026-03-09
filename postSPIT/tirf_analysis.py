@@ -962,7 +962,7 @@ class Cell_Analyzer:
     maturation : dict
         Predicted maturation per cell per channel.
     """
-    def __init__(self, folder, ch0_wl=None, ch1_wl=None):
+    def __init__(self, folder, ch0_wl=None, ch1_wl=None, roi_type = None):
         self.folder = folder 
         self.nm2px = self._get_nm2px()
 
@@ -985,10 +985,10 @@ class Cell_Analyzer:
         if (ch0_wl and ch0_wl not in self.images) or (ch1_wl and ch1_wl not in self.images):
             raise ValueError(f"Requested wavelengths not found. Available: {self.channels}. Requested: {ch0_wl}, {ch1_wl}")
         # separate the cells:
-        try:
-            self.split_cells()
-        except: 
-            print('No ROI available')
+        # try:
+        self.split_cells(roi_type=roi_type)
+        # except: 
+        #     print('No ROI available')
         # placeholders for downstream analyses
         self.clusters_binary = {wl: None for wl in self.channels}
         self.result_cluster_analysis = {wl: None for wl in self.channels}
@@ -1104,16 +1104,16 @@ class Cell_Analyzer:
             
     def _get_contour(self, cell_id, frame):
         key = (cell_id, frame)
-        if key in self.contours.index:
-            return self.contours.loc[key]
+        if key in self.contours.keys():
+            return self.contours[key]
         else:
-            return self.contours.loc[(cell_id, 0)]
+            return self.contours[(cell_id, 0)]
     def _get_centroid(self, cell_id, frame):
         key = (cell_id, frame)
-        if key in self.centroids.index:
-            return self.centroids.loc[key]
+        if key in self.centroids.keys():
+            return self.centroids[key]
         else:
-            return self.centroids.loc[(cell_id, 0)]
+            return self.centroids[(cell_id, 0)]
     def split_cells(self, roi_type = None):
         """
        Crop images per cell based on ROI files and store contours and centroids.
@@ -1141,7 +1141,7 @@ class Cell_Analyzer:
                 )
             unique_contours = linked_rois.set_index(['label','frame'])['contour']
             unique_centroids = linked_rois.set_index(['label','frame'])[['x','y']].apply(tuple, axis=1)
-            unique_bboxes = bbox.apply(lambda r: [r.bbox_x0, r.bbox_x1, r.bbox_y0, r.bbox_y1], axis=1)
+            unique_bboxes = bbox.apply(lambda r: [int(r.bbox_x0), int(r.bbox_x1), int(r.bbox_y0), int(r.bbox_y1)], axis=1)
 
         elif rois and roi_type in (None, 'rois'):
             for roi in rois:
@@ -1151,7 +1151,7 @@ class Cell_Analyzer:
                 x0, x1 = int(min(roi_contour[:, 0])), int(max(roi_contour[:, 0]))
                 y0, y1 = int(min(roi_contour[:, 1])), int(max(roi_contour[:, 1]))
                 roi_contours[(cell_id, 0)] = roi_contour
-                roi_centroids[(cell_id, 0)] = roi_centroid
+                roi_centroids[(cell_id, 0)] = roi_centroid[0]
                 bboxes[cell_id] = [x0, x1, y0, y1]
 
 
@@ -1274,7 +1274,7 @@ class Cell_Analyzer:
                 if frame_num not in self.cluster_contours[cell_id]:
                     self.cluster_contours[cell_id][frame_num] = {}
     
-                mask = self._create_mask(to_work[0].shape, self._get_contour[cell_id, frame_num])
+                mask = self._create_mask(to_work[0].shape, self._get_contour(cell_id, frame_num))
                 labeled = label(binary_frame)
 
                 for region in regionprops(labeled, intensity_image=to_work[frame_num]):
@@ -1327,7 +1327,7 @@ class Cell_Analyzer:
                         'norm_sum_int': sum_int / median_int_out,
                         'med_int': median_int,
                         'norm_med_int': median_int / median_int_out,
-                        'dist_cent': np.linalg.norm(np.array([centroid_row, centroid_col]) - self._get_centroid[(cell_id, frame_num)][0]) * self.nm2px,
+                        'dist_cent': np.linalg.norm(np.array([centroid_row, centroid_col]) - self._get_centroid(cell_id, frame_num)) * self.nm2px,
                         'solidity': solidity,
                         'perimeter': perimeter * self.nm2px,
                         'circularity': circularity,
