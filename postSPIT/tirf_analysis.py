@@ -1102,7 +1102,19 @@ class Cell_Analyzer:
             dt = 0.001 * float((''.join(c for c in dtStr if (c.isdigit() or c == '.'))))
         return dt
             
-    def split_cells(self):
+    def _get_contour(self, cell_id, frame):
+        key = (cell_id, frame)
+        if key in self.contours.index:
+            return self.contours.loc[key]
+        else:
+            return self.contours.loc[(cell_id, 0)]
+    def _get_centroid(self, cell_id, frame):
+        key = (cell_id, frame)
+        if key in self.centroids.index:
+            return self.centroids.loc[key]
+        else:
+            return self.centroids.loc[(cell_id, 0)]
+    def split_cells(self, roi_type = None):
         """
        Crop images per cell based on ROI files and store contours and centroids.
 
@@ -1113,35 +1125,63 @@ class Cell_Analyzer:
        """
         roi_contours = {}
         roi_centroids = {}
+        bboxes = {}
         rois = natsorted(glob(os.path.join(self.folder, "*.roi")))
-        if not rois:
+        pkl = os.path.join(self.folder,"cell_detection", "linked_rois.pkl")
+        if not rois and not os.path.exists(pkl):
             raise RuntimeError(f"No ROI files found in folder: {self.folder}")
+        
+        if os.path.exists(pkl) and roi_type in (None, 'pkl'):
+            linked_rois = pd.read_pickle(pkl)
+            bbox = linked_rois.groupby('label').agg(
+                    bbox_x0=('x','min'),
+                    bbox_x1=('x','max'),
+                    bbox_y0=('y','min'),
+                    bbox_y1=('y','max')
+                )
+            unique_contours = linked_rois.set_index(['label','frame'])['contour']
+            unique_centroids = linked_rois.set_index(['label','frame'])[['x','y']].apply(tuple, axis=1)
+            unique_bboxes = bbox.apply(lambda r: [r.bbox_x0, r.bbox_x1, r.bbox_y0, r.bbox_y1], axis=1)
 
-        for roi in rois:
-            cell_id = int(re.search(r'roi(\d+)\.roi$', roi).group(1))
-            roi_contour = tools.get_roi_contour(roi)
-            roi_centroid = tools.get_roi_centroid(roi_contour)
-            roi_contours[cell_id] = roi_contour
-            roi_centroids[cell_id] = roi_centroid
+        elif rois and roi_type in (None, 'rois'):
+            for roi in rois:
+                cell_id = int(re.search(r'roi(\d+)\.roi$', roi).group(1))
+                roi_contour = tools.get_roi_contour(roi)
+                roi_centroid = tools.get_roi_centroid(roi_contour)
+                x0, x1 = int(min(roi_contour[:, 0])), int(max(roi_contour[:, 0]))
+                y0, y1 = int(min(roi_contour[:, 1])), int(max(roi_contour[:, 1]))
+                roi_contours[(cell_id, 0)] = roi_contour
+                roi_centroids[(cell_id, 0)] = roi_centroid
+                bboxes[cell_id] = [x0, x1, y0, y1]
 
-        unique_contours = pd.Series(roi_contours)
-        unique_centroids = pd.Series(roi_centroids)
 
+            unique_contours = pd.Series(roi_contours)
+            unique_contours.index = pd.MultiIndex.from_tuples(unique_contours.index, names=['label','frame'])
+            unique_centroids = pd.Series(roi_centroids)
+            unique_centroids.index = pd.MultiIndex.from_tuples(unique_centroids.index, names=['label','frame'])
+            unique_bboxes = pd.Series(bboxes)
+            unique_bboxes.index.name = 'cell_id'
+        else:
+            raise RuntimeError(f"Requested roi_type={roi_type!r}, but that source is not available.")
+        
         self.sep_cells, self.contours, self.centroids = {}, {}, {}
-        for cell_id in unique_contours.index:
-            i = unique_contours[cell_id]
-            j = unique_centroids[cell_id]
-            x0, x1 = int(min(i[:, 0])), int(max(i[:, 0]))
-            y0, y1 = int(min(i[:, 1])), int(max(i[:, 1]))
+        for (cell_id, frame) in unique_contours.index:
+            i = unique_contours[(cell_id, frame)]
+            j = unique_centroids[(cell_id, frame)]
+            x0, x1, y0, y1 = unique_bboxes[cell_id]
 
             # crop available channels
-            self.sep_cells[cell_id] = {wl: im[:, y0:y1, x0:x1] for wl, im in self.images.items()}
+            if cell_id not in self.sep_cells:
+                self.sep_cells[cell_id] = {wl: im[:, y0:y1, x0:x1] for wl, im in self.images.items()}
 
 
-            corr = i.copy(); corr[:, 0] -= x0; corr[:, 1] -= y0
-            corr_cen = j.copy(); corr_cen[:, 0] -= x0; corr_cen[:, 1] -= y0
-            self.contours[cell_id] = corr
-            self.centroids[cell_id] = corr_cen
+            corr = i.copy()
+            corr[:, 0] -= x0
+            corr[:, 1] -= y0
+            cx, cy = j
+            corr_cen = (cx - x0, cy - y0)
+            self.contours[(cell_id, frame)] = corr
+            self.centroids[(cell_id, frame)] = corr_cen
     def analyze_clusters_protein(self, min_size=80, ch='ch0', th_method='li_local', global_th_mode='max',
                              window_size=15, p=2, q=6, save_videos=False, overwrite = False):
         """
@@ -1210,9 +1250,9 @@ class Cell_Analyzer:
             to_work = self.sep_cells[cell_id][wl]
     
             if 'li' in th_method:
-                global_mask = self._li_threshold(to_work, self.contours[cell_id], mode=global_th_mode)
+                global_mask = self._li_threshold(to_work, mode=global_th_mode)
             elif 'otsu' in th_method:
-                global_mask = self._otsu_threshold(to_work, self.contours[cell_id], mode=global_th_mode)
+                global_mask = self._otsu_threshold(to_work, mode=global_th_mode)
             else:
                 raise ValueError(f'{th_method} is not a valid thresholding method')
     
@@ -1225,17 +1265,18 @@ class Cell_Analyzer:
                 binary_stack = global_mask
     
             clusters_binary[cell_id] = binary_stack
-            mask = self._create_mask(to_work[0].shape, self.contours[cell_id])
+            # mask = self._create_mask(to_work[0].shape, self.contour[cell_id])
     
             if cell_id not in self.cluster_contours:
                 self.cluster_contours[cell_id] = {}
-    
+            
             for frame_num, binary_frame in enumerate(binary_stack):
                 if frame_num not in self.cluster_contours[cell_id]:
                     self.cluster_contours[cell_id][frame_num] = {}
     
+                mask = self._create_mask(to_work[0].shape, self._get_contour[cell_id, frame_num])
                 labeled = label(binary_frame)
-    
+
                 for region in regionprops(labeled, intensity_image=to_work[frame_num]):
                     if region.area <= min_size:
                         continue
@@ -1286,7 +1327,7 @@ class Cell_Analyzer:
                         'norm_sum_int': sum_int / median_int_out,
                         'med_int': median_int,
                         'norm_med_int': median_int / median_int_out,
-                        'dist_cent': np.linalg.norm(np.array([centroid_row, centroid_col]) - self.centroids[cell_id][0]) * self.nm2px,
+                        'dist_cent': np.linalg.norm(np.array([centroid_row, centroid_col]) - self._get_centroid[(cell_id, frame_num)][0]) * self.nm2px,
                         'solidity': solidity,
                         'perimeter': perimeter * self.nm2px,
                         'circularity': circularity,
@@ -1691,7 +1732,7 @@ class Cell_Analyzer:
         else:
             # No valid crossing, just pick 5 equally spaced
             return [0, n_frames//4, n_frames//2, 3*n_frames//4, n_frames-1]
-    def _li_threshold(self, image, mask, mode = "max"):
+    def _li_threshold(self, image, mode = "max"):
         """
             Apply Li global threshold to a 2D/3D image stack.
         
@@ -1722,7 +1763,7 @@ class Cell_Analyzer:
             return None
         global_mask = binary_closing((image > thresh)) #& self._create_mask(image[0].shape, mask))
         return global_mask
-    def _otsu_threshold(self, original, image, mask, mode = "max"):
+    def _otsu_threshold(self, original, image, mode = "max"):
         """
             Apply Otsu global threshold to a 2D/3D image stack.
         
@@ -2640,8 +2681,16 @@ class Combined_analysis:
             
                 for cell_id, group in spots_filtered.groupby('cell_id'):
                     img_stack = self.clusters.sep_cells[cell_id][wl]
-                    mask = self.clusters._create_mask(img_stack[0].shape, self.clusters.contours[cell_id])
-                    median_int_out = np.median([np.median(img[~mask]) for img in img_stack])
+                    # mask = self.clusters._create_mask(img_stack[0].shape, self.clusters._contours[cell_id])
+                    median_int_out = np.median([
+                                np.median(
+                                    img[~self.clusters._create_mask(
+                                        img.shape,
+                                        self.clusters._get_contour(cell_id, frame_num)
+                                    )]
+                                )
+                                for frame_num, img in enumerate(img_stack)
+                            ])
             
                     for idx, spot in group.iterrows():
                         t = int(spot["t"])
